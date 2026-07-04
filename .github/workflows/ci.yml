@@ -1,0 +1,45 @@
+name: ZioNet ApprovalFlow CI Quality Gate
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-verify:
+    name: Build Microservice Cluster & Run Quality Gates (M16/M17)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure CI Environment Variables
+        run: |
+          # Use mock provider during CI so tests run fast and without external API keys (M15)
+          echo "LLM_PROVIDER=mock" >> $GITHUB_ENV
+          echo "AUTONOMY_CEILING=250.0" >> $GITHUB_ENV
+          echo "DAPR_HTTP_PORT=3500" >> $GITHUB_ENV
+
+      - name: Boot Microservice Stack via Docker Compose (M4)
+        run: |
+          echo "Building and booting container cluster..."
+          docker compose up --build -d
+
+      - name: Wait for Dapr Mesh & Container Initialization
+        run: |
+          echo "Waiting 15 seconds for Dapr placement sidecars and Redis to initialize..."
+          sleep 15
+          docker compose ps
+
+      - name: Execute Automated Verification Suite (M17)
+        shell: pwsh
+        run: |
+          ./run-ci-tests.ps1
+
+      - name: Dump Container Logs on Failure
+        if: failure()
+        run: |
+          echo "❌ Quality Gate Failed! Dumping logs for diagnostics:"
+          docker compose logs --tail=50
