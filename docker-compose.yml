@@ -1,0 +1,101 @@
+services:
+  redis:
+    image: "redis:alpine"
+    ports:
+      - "6379:6379"
+    networks:
+      - approval-network
+
+  placement:
+    image: "daprio/placement:latest"
+    command: ["./placement", "-port", "50005"]
+    ports:
+      - "50005:50005"
+    networks:
+      - approval-network
+
+  workflow-service:
+    build:
+      context: ./workflow-service
+    ports:
+      - "5001:8080" # Maps host port 5001 to container port 8080 (.NET default)
+    depends_on:
+      - redis
+    networks:
+      - approval-network
+
+  workflow-service-dapr:
+    image: "daprio/daprd:latest"
+    command: [
+      "./daprd",
+      "-app-id", "workflow-service",
+      "-app-port", "8080",
+      "-resources-path", "/components",
+      "-placement-host-address", "placement:50005"
+    ]
+    volumes:
+      - "./dapr-components:/components"
+    depends_on:
+      - workflow-service
+    network_mode: "service:workflow-service"
+    
+  ai-service:
+    build:
+      context: ./ai-service
+    ports:
+      - "8000:8000"
+    environment:
+      - AUTONOMY_CEILING=250.0 # Updated to match policy.md default
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      - redis
+    networks:
+      - approval-network
+
+  ai-service-dapr:
+    image: "daprio/daprd:latest"
+    command: [
+      "./daprd",
+      "-app-id", "ai-service",
+      "-app-port", "8000",
+      "-resources-path", "/components",
+      "-placement-host-address", "placement:50005"
+    ]
+    volumes:
+      - "./dapr-components:/components"
+    depends_on:
+      - ai-service
+    network_mode: "service:ai-service"
+
+  payment-service:
+    build: ./payment-service
+    ports:
+      - "8001:8001"
+    environment:
+      - DAPR_GRPC_PORT=50001
+      - DAPR_HTTP_PORT=3500
+    depends_on:
+      - redis
+    networks:
+      - approval-network
+
+  payment-service-dapr:
+    image: "daprio/daprd:latest"
+    command: [
+      "./daprd",
+      "-app-id", "payment-service",
+      "-app-port", "8001",
+      "-dapr-http-port", "3500",
+      "-dapr-grpc-port", "50001",
+      "-resources-path", "/components",
+      "-placement-host-address", "placement:50005"
+    ]
+    volumes:
+      - "./dapr-components:/components"
+    depends_on:
+      - payment-service
+    network_mode: "service:payment-service"
+
+networks:
+  approval-network:
+    driver: bridge

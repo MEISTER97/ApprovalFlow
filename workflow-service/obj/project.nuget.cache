@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "dgSpecHash": "3Jv/CxKPhMw=",
+  "success": true,
+  "projectFilePath": "E:\\Learning\\Zionet\\Final project\\Submission\\workflow-service\\workflow-service.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\mantr\\.nuget\\packages\\dapr.aspnetcore\\1.18.4\\dapr.aspnetcore.1.18.4.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\dapr.client\\1.18.4\\dapr.client.1.18.4.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\dapr.common\\1.18.4\\dapr.common.1.18.4.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\dapr.protos\\1.18.4\\dapr.protos.1.18.4.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\google.api.commonprotos\\2.17.0\\google.api.commonprotos.2.17.0.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\google.protobuf\\3.35.0\\google.protobuf.3.35.0.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\grpc.core.api\\2.80.0\\grpc.core.api.2.80.0.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\grpc.net.client\\2.80.0\\grpc.net.client.2.80.0.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\grpc.net.common\\2.80.0\\grpc.net.common.2.80.0.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\grpc.reflection\\2.80.0\\grpc.reflection.2.80.0.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\microsoft.aspnetcore.openapi\\10.0.9\\microsoft.aspnetcore.openapi.10.0.9.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\microsoft.openapi\\2.0.0\\microsoft.openapi.2.0.0.nupkg.sha512"
+  ],
+  "logs": [
+    {
+      "code": "NU1903",
+      "level": "Warning",
+      "message": "Package 'Microsoft.OpenApi' 2.0.0 has a known high severity vulnerability, https://github.com/advisories/GHSA-v5pm-xwqc-g5wc",
+      "projectPath": "E:\\Learning\\Zionet\\Final project\\Submission\\workflow-service\\workflow-service.csproj",
+      "warningLevel": 1,
+      "filePath": "E:\\Learning\\Zionet\\Final project\\Submission\\workflow-service\\workflow-service.csproj",
+      "libraryId": "Microsoft.OpenApi",
+      "targetGraphs": [
+        "net10.0"
+      ]
+    }
+  ]
+}
