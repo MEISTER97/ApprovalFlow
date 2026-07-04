@@ -1,12 +1,13 @@
 using Dapr.Client;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Register Dapr Client
 builder.Services.AddDaprClient();
 
-// Add CORS policy for Flutter Web / Desktop UI
+// Add CORS policy for Flutter Web / Desktop UI 
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
@@ -19,170 +20,439 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 app.UseCors();
-
 app.UseCloudEvents();
+
+// --- HEALTH CHECK ENDPOINT (Requirement M15) ---
+app.MapGet("/healthz", () => Results.Ok(new 
+{ 
+    status = "HEALTHY", 
+    service = "workflow-service", 
+    timestamp = DateTime.UtcNow 
+}));
+
 app.MapSubscribeHandler();
 
 const string StateStoreName = "statestore";
 
-// --- ENDPOINT 1: Intake (Asynchronous & Non-blocking) ---
-app.MapPost("/api/invoices", async ([FromBody] InvoiceSubmission payload, DaprClient daprClient) =>
+// Initial department budget defaults matching sample-invoices.json section 7
+var DefaultBudgets = new Dictionary<string, double>
 {
-    var trackingId = Guid.NewGuid().ToString();
-    var state = new WorkflowState(trackingId, payload, "PENDING", new List<string>(), "Awaiting AI/Deterministic Evaluation");
-    
-    Console.WriteLine($"\n[Workflow Service] Ingested invoice {trackingId} for {payload.Vendor} ({payload.Total} {payload.Currency})");
+    ["marketing-2026Q2"] = 1000.0,
+    ["engineering-2026Q2"] = 50000.0,
+    ["sales-2026Q2"] = 20000.0
+};
 
-    // Durably store the initial PENDING state in Redis via Dapr
+// =========================================================================
+// STRUCTURED JSON LOGGER (Requirement M14)
+// =========================================================================
+void LogStructured(string? correlationId, string message, string level = "INFO")
+{
+    var logEntry = new
+    {
+        timestamp = DateTime.UtcNow.ToString("o"),
+        service = "workflow-service",
+        level = level,
+        correlationId = correlationId ?? "N/A",
+        message = message
+    };
+    Console.WriteLine(JsonSerializer.Serialize(logEntry));
+}
+
+// =========================================================================
+// SAGA HELPER METHODS (Budget Reservation & Compensation)
+// =========================================================================
+
+async Task<bool> TryReserveBudgetAsync(DaprClient dapr, string department, double amount, string invoiceId, string? correlationId = null)
+{
+    string budgetKey = $"budget:{department}";
+    var budgetState = await dapr.GetStateEntryAsync<double?>(StateStoreName, budgetKey);
+    
+    if (budgetState.Value == null)
+    {
+        budgetState.Value = DefaultBudgets.GetValueOrDefault(department, 10000.0);
+    }
+
+    LogStructured(correlationId, $"[Saga Reserve] Checking {budgetKey}: Balance = ${budgetState.Value:F2} | Requested = ${amount:F2}");
+
+    if (budgetState.Value < amount)
+    {
+        LogStructured(correlationId, $"[Saga Reserve] BLOCKED: Insufficient funds in {department}. Budget cannot fall below $0.", "WARN");
+        return false;
+    }
+
+    budgetState.Value -= amount;
+    await budgetState.SaveAsync();
+    LogStructured(correlationId, $"[Saga Reserve] SUCCESS: Reserved ${amount:F2} for {invoiceId}. Remaining Balance = ${budgetState.Value:F2}");
+    return true;
+}
+
+async Task ReleaseBudgetAsync(DaprClient dapr, string department, double amount, string invoiceId, string? correlationId = null)
+{
+    string budgetKey = $"budget:{department}";
+    var budgetState = await dapr.GetStateEntryAsync<double?>(StateStoreName, budgetKey);
+    
+    double currentBalance = budgetState.Value ?? DefaultBudgets.GetValueOrDefault(department, 0.0);
+    currentBalance += amount;
+    
+    await dapr.SaveStateAsync(StateStoreName, budgetKey, currentBalance);
+    LogStructured(correlationId, $"[Saga Rollback] COMPENSATED: Released ${amount:F2} back to {budgetKey} for {invoiceId}. Restored Balance = ${currentBalance:F2}");
+}
+
+const string EscalationIndexKey = "index:escalations";
+
+async Task AddToEscalationQueueAsync(DaprClient dapr, string invoiceId, string? correlationId = null)
+{
+    var indexEntry = await dapr.GetStateEntryAsync<HashSet<string>>(StateStoreName, EscalationIndexKey);
+    indexEntry.Value ??= new HashSet<string>();
+    
+    if (indexEntry.Value.Add(invoiceId))
+    {
+        await indexEntry.SaveAsync();
+        LogStructured(correlationId, $"[Escalation Registry] Added {invoiceId} to open manager queue.");
+    }
+}
+
+async Task RemoveFromEscalationQueueAsync(DaprClient dapr, string invoiceId, string? correlationId = null)
+{
+    var indexEntry = await dapr.GetStateEntryAsync<HashSet<string>>(StateStoreName, EscalationIndexKey);
+    if (indexEntry.Value != null && indexEntry.Value.Remove(invoiceId))
+    {
+        await indexEntry.SaveAsync();
+        LogStructured(correlationId, $"[Escalation Registry] Removed {invoiceId} from open manager queue.");
+    }
+}
+
+const string MetricsKey = "metrics:dashboard";
+
+async Task UpdateMetricsAsync(DaprClient dapr, string actionType, double amount = 0.0)
+{
+    var entry = await dapr.GetStateEntryAsync<DashboardMetrics>(StateStoreName, MetricsKey);
+    var current = entry.Value ?? new DashboardMetrics();
+
+    entry.Value = actionType switch
+    {
+        "SUBMIT" => current with { TotalSubmissions = current.TotalSubmissions + 1 },
+        "AUTO_APPROVE" => current with 
+        { 
+            AutoApprovedCount = current.AutoApprovedCount + 1, 
+            AutoApprovedAmount = current.AutoApprovedAmount + amount 
+        },
+        "ESCALATE" => current with { EscalatedCount = current.EscalatedCount + 1 },
+        "HUMAN_APPROVE" => current with 
+        { 
+            HumanApprovedCount = current.HumanApprovedCount + 1, 
+            HumanApprovedAmount = current.HumanApprovedAmount + amount 
+        },
+        _ => current
+    };
+
+    await entry.SaveAsync();
+}
+
+// =========================================================================
+// ENDPOINTS
+// =========================================================================
+
+// --- ENDPOINT 1: Intake (Asynchronous & Non-blocking) ---
+app.MapPost("/api/invoices", async (HttpContext context, [FromBody] InvoiceSubmission payload, DaprClient daprClient) =>
+{
+    var trackingId = payload.Id ?? Guid.NewGuid().ToString();
+    var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault() ?? Guid.NewGuid().ToString();
+    
+    var state = new WorkflowState(
+        Id: trackingId, 
+        Payload: payload, 
+        Status: "PENDING", 
+        Violations: new List<string>(), 
+        Reason: "Awaiting AI/Deterministic Evaluation",
+        CorrelationId: correlationId,
+        FinalActor: "Pending Evaluation",
+        PaymentOutcome: "Not Started"
+    );
+    
+    LogStructured(correlationId, $"Ingested invoice {trackingId} for vendor {payload.Vendor}");
+
     await daprClient.SaveStateAsync(StateStoreName, trackingId, state);
-
-    // Publish to the queue for evaluation
     await daprClient.PublishEventAsync("pubsub", "invoice_submitted", state);
-    
-    return Results.Accepted(value: new { trackingId, status = "PENDING" });
+    await UpdateMetricsAsync(daprClient, "SUBMIT");
+    return Results.Accepted(value: new { trackingId, correlationId, status = "PENDING" });
 });
 
 // --- ENDPOINT 2: Catch AI / Deterministic Routing Decision ---
 app.MapPost("/api/workflow/evaluated", async ([FromBody] EvaluationResult aiResponse, DaprClient daprClient) =>
 {
-    Console.WriteLine($"\n[Workflow Service] Evaluation Callback Received for {aiResponse.Id}");
-    
-    // Fetch current state from Redis to preserve original payload
     var currentState = await daprClient.GetStateAsync<WorkflowState>(StateStoreName, aiResponse.Id);
     if (currentState == null)
     {
-        Console.WriteLine($"[Workflow Service] ⚠️ Error: State not found for Invoice {aiResponse.Id}");
+        LogStructured(null, $"Error: State not found for Invoice {aiResponse.Id}", "ERROR");
         return Results.NotFound();
     }
 
-    // Map strict grading routes to readable internal tracking statuses
+    string correlationId = currentState.CorrelationId ?? aiResponse.Id;
+
     string updatedStatus = aiResponse.Route?.ToLower() switch
     {
         "auto_approve" => "APPROVED",
         "human_review" => "PENDING_HUMAN_REVIEW",
         "reject"       => "REJECTED",
         "duplicate"    => "DUPLICATE_DISCARDED",
-        _              => "PENDING_HUMAN_REVIEW" // Fallback safety pause
+        _              => "PENDING_HUMAN_REVIEW"
     };
 
-    // Update state object with results
+    string actor = updatedStatus switch
+    {
+        "APPROVED" => "AI Agent (Autonomous)",
+        "PENDING_HUMAN_REVIEW" => "Pending HITL Manager Review",
+        "REJECTED" => "Deterministic Safety Guard / AI Agent",
+        "DUPLICATE_DISCARDED" => "Deterministic Idempotency Guard",
+        _ => "System"
+    };
+
     var updatedState = currentState with 
     { 
         Status = updatedStatus,
         Violations = aiResponse.Violations ?? new List<string>(),
-        Reason = aiResponse.Reason ?? "No reason provided by evaluator."
+        Reason = aiResponse.Reason ?? "No reason provided by evaluator.",
+        FinalActor = actor,
+        PaymentOutcome = updatedStatus == "APPROVED" ? "Processing Payment Saga" : "N/A (Did Not Approve)"
     };
 
-    // Commit final status durably to Redis
-    await daprClient.SaveStateAsync(StateStoreName, aiResponse.Id, updatedState);
-    Console.WriteLine($"[Workflow Service] State committed to Redis: [{updatedStatus}]");
-
-    // Execute downstream actions based on the route
-    switch (updatedStatus)
+    if (updatedStatus == "APPROVED")
     {
-        case "APPROVED":
-            Console.WriteLine($"[Workflow Service] ⏩ RESUMING WORKFLOW: Item {aiResponse.Id} passed. Forwarding to payments...");
+        string dept = currentState.Payload.Department ?? "engineering-2026Q2";
+        double amount = currentState.Payload.Total;
+
+        bool reserved = await TryReserveBudgetAsync(daprClient, dept, amount, aiResponse.Id, correlationId);
+        if (reserved)
+        {
+            updatedState = updatedState with { Status = "BUDGET_RESERVED", PaymentOutcome = "Reserved & Forwarded to Payments" };
+            await daprClient.SaveStateAsync(StateStoreName, aiResponse.Id, updatedState);
+            
+            LogStructured(correlationId, $"RESUMING WORKFLOW: Item {aiResponse.Id} reserved budget. Forwarding to payments.");
             await daprClient.PublishEventAsync("pubsub", "invoice_approved", updatedState);
-            break;
-
-        case "PENDING_HUMAN_REVIEW":
-            Console.WriteLine($"[Workflow Service] ⏸️ PAUSING WORKFLOW: Item {aiResponse.Id} parked in Redis waiting for a manager.");
-            break;
-
-        case "REJECTED":
-            Console.WriteLine($"[Workflow Service] ❌ TERMINATING WORKFLOW: Item {aiResponse.Id} failed corporate policy rules.");
-            break;
-
-        case "DUPLICATE_DISCARDED":
-            Console.WriteLine($"[Workflow Service] 🛡️ ABORTING WORKFLOW: Item {aiResponse.Id} dropped safely to prevent double payment.");
-            break;
+        }
+        else
+        {
+            updatedState = updatedState with 
+            { 
+                Status = "REJECTED_INSUFFICIENT_BUDGET",
+                Reason = $"Saga Aborted: Department budget '{dept}' has insufficient funds for ${amount:F2}.",
+                PaymentOutcome = "Aborted: Insufficient Budget"
+            };
+            await daprClient.SaveStateAsync(StateStoreName, aiResponse.Id, updatedState);
+            LogStructured(correlationId, $"BLOCKED: Insufficient budget for item {aiResponse.Id}.", "WARN");
+        }
+        await UpdateMetricsAsync(daprClient, "AUTO_APPROVE", amount);
+    }
+    else if (updatedStatus == "PENDING_HUMAN_REVIEW")
+    {
+        await daprClient.SaveStateAsync(StateStoreName, aiResponse.Id, updatedState);
+        await AddToEscalationQueueAsync(daprClient, aiResponse.Id, correlationId);
+        LogStructured(correlationId, $"State committed to Redis & Escalation Queue: [{updatedStatus}]");
+        await UpdateMetricsAsync(daprClient, "ESCALATE");
+    }
+    else
+    {
+        await daprClient.SaveStateAsync(StateStoreName, aiResponse.Id, updatedState);
+        LogStructured(correlationId, $"State committed to Redis: [{updatedStatus}]");
     }
 
     return Results.Ok();
 })
-.WithTopic("pubsub", "invoice_evaluated");
+.WithTopic("pubsub", "invoice_evaluated")
+.WithName("invoice_evaluated");
 
-// --- ENDPOINT 3: Live Query Poll (For cURL or Submitter View) ---
+// --- ENDPOINT 3: Live Query Poll ---
 app.MapGet("/api/invoices/{id}", async (string id, DaprClient daprClient) =>
 {
     var state = await daprClient.GetStateAsync<WorkflowState>(StateStoreName, id);
     return state != null ? Results.Ok(state) : Results.NotFound(new { error = "Invoice tracking ID not found." });
 });
 
-// --- ENDPOINT 4: Fetch Human Review Queue (For Approver Dashboard) ---
+// --- ENDPOINT 4: Fetch Human Review Queue ---
 app.MapGet("/api/escalations", async (DaprClient daprClient) =>
 {
-    // Querying Dapr state directly relies on state store query capabilities.
-    // For local ease of use with standard Redis without complex setup, we use standard keys 
-    // or scanning. Dapr allows advanced querying if configured, but for a foolproof approach 
-    // we can retrieve keys or stream. Let's provide a clean retrieval signature.
-    try 
+    var indexEntry = await daprClient.GetStateEntryAsync<HashSet<string>>(StateStoreName, EscalationIndexKey);
+    var pendingIds = indexEntry.Value ?? new HashSet<string>();
+
+    var escalatedItems = new List<WorkflowState>();
+
+    foreach (var id in pendingIds)
     {
-        // For the assignment scope, the frontend will pull items or query specific entries.
-        // We'll return an endpoint that your dashboard can poll. 
-        // Note: For a true index, modern microservices store an array of open tracking IDs.
-        // Let's keep it production-safe.
-        return Results.Ok(new { message = "Escalation registry query endpoint ready." });
+        var item = await daprClient.GetStateAsync<WorkflowState>(StateStoreName, id);
+        if (item != null && item.Status == "PENDING_HUMAN_REVIEW")
+        {
+            escalatedItems.Add(item);
+        }
     }
-    catch (Exception ex)
+
+    return Results.Ok(new
     {
-        return Results.BadRequest(ex.Message);
-    }
+        totalEscalations = escalatedItems.Count,
+        queue = escalatedItems
+    });
 });
 
-// --- ENDPOINT 5: Human Overrides (Approve / Reject Action) ---
+// --- ENDPOINT 5: Human Overrides (Approve / Reject / Send Back Action) ---
 app.MapPost("/api/escalations/{id}/action", async (string id, [FromBody] HumanActionRequest request, DaprClient daprClient) =>
 {
     var state = await daprClient.GetStateAsync<WorkflowState>(StateStoreName, id);
     if (state == null) return Results.NotFound();
+    
+    string correlationId = state.CorrelationId ?? id;
+    await RemoveFromEscalationQueueAsync(daprClient, id, correlationId);
 
-    if (state.Status != "PENDING_HUMAN_REVIEW")
+    if (state.Status != "PENDING_HUMAN_REVIEW" && state.Status != "PENDING_MORE_INFO")
     {
         return Results.BadRequest(new { error = $"Invoice is currently in [{state.Status}] status and cannot be actioned." });
     }
 
-    string targetStatus = request.Action.ToUpper() == "APPROVE" ? "APPROVED" : "REJECTED";
-    
+    string actionUpper = request.Action.ToUpper();
+    string targetStatus = actionUpper switch
+    {
+        "APPROVE" => "APPROVED",
+        "REJECT"  => "REJECTED",
+        "SEND_BACK" or "MORE_INFO" or "REQUEST_INFO" => "PENDING_MORE_INFO",
+        _         => "REJECTED"
+    };
+
+    string paymentOutcome = targetStatus switch
+    {
+        "APPROVED" => "Processing Payment Saga",
+        "PENDING_MORE_INFO" => "Paused: Awaiting Submitter Clarification",
+        _ => "Rejected by Manager"
+    };
+
     var updatedState = state with 
     { 
         Status = targetStatus,
-        Reason = $"Manually overridden by Manager. Decision Notes: {request.Notes}"
+        Reason = $"HITL Manager Action ({actionUpper}): {request.Notes}",
+        FinalActor = $"HITL Manager ({actionUpper})",
+        PaymentOutcome = paymentOutcome
     };
-
-    await daprClient.SaveStateAsync(StateStoreName, id, updatedState);
-    Console.WriteLine($"\n[Workflow Service] 👤 HITL OVERRIDE: Manager set item {id} to [{targetStatus}]");
 
     if (targetStatus == "APPROVED")
     {
-        Console.WriteLine($"[Workflow Service] ⏩ RESUMING WORKFLOW: Manually releasing item {id} to payments.");
-        await daprClient.PublishEventAsync("pubsub", "invoice_approved", updatedState);
-    }
+        string dept = state.Payload.Department ?? "engineering-2026Q2";
+        double amount = state.Payload.Total;
 
+        bool reserved = await TryReserveBudgetAsync(daprClient, dept, amount, id, correlationId);
+        if (reserved)
+        {
+            updatedState = updatedState with { Status = "BUDGET_RESERVED", PaymentOutcome = "Reserved & Forwarded to Payments" };
+            await daprClient.SaveStateAsync(StateStoreName, id, updatedState);
+            
+            LogStructured(correlationId, $"HITL OVERRIDE: Manager approved {id}. Budget reserved. Sending to payments.");
+            await daprClient.PublishEventAsync("pubsub", "invoice_approved", updatedState);
+        }
+        else
+        {
+            updatedState = updatedState with 
+            { 
+                Status = "REJECTED_INSUFFICIENT_BUDGET",
+                Reason = $"HITL Approved, but aborted: Department '{dept}' lacks sufficient budget.",
+                PaymentOutcome = "Aborted: Insufficient Budget"
+            };
+            await daprClient.SaveStateAsync(StateStoreName, id, updatedState);
+        }
+        await UpdateMetricsAsync(daprClient, "HUMAN_APPROVE", amount);
+    }
+    else if (targetStatus == "PENDING_MORE_INFO")
+    {
+        await daprClient.SaveStateAsync(StateStoreName, id, updatedState);
+        LogStructured(correlationId, $"HITL OVERRIDE: Manager sent item {id} back for more info.");
+    }
+    else
+    {
+        await daprClient.SaveStateAsync(StateStoreName, id, updatedState);
+        LogStructured(correlationId, $"HITL OVERRIDE: Manager rejected item {id}.");
+    }
+    
     return Results.Ok(updatedState);
 });
 
 // --- ENDPOINT 6: Saga Compensating Transaction (Catch Payment Failure) ---
 app.MapPost("/api/workflow/payment-failed", async ([FromBody] PaymentFailureNotification failure, DaprClient daprClient) =>
 {
-    Console.WriteLine($"\n[Workflow Service] 💥 SAGA ROLLBACK TRIGGERED for Invoice {failure.Id}");
-
     var currentState = await daprClient.GetStateAsync<WorkflowState>(StateStoreName, failure.Id);
+    string correlationId = currentState?.CorrelationId ?? failure.Id;
+
+    LogStructured(correlationId, $"SAGA ROLLBACK TRIGGERED for Invoice {failure.Id}", "WARN");
+
     if (currentState != null)
     {
+        if (currentState.Status == "BUDGET_RESERVED" || currentState.Status == "APPROVED")
+        {
+            string dept = currentState.Payload.Department ?? "engineering-2026Q2";
+            double amount = currentState.Payload.Total;
+            await ReleaseBudgetAsync(daprClient, dept, amount, failure.Id, correlationId);
+        }
+
         var compensatedState = currentState with
         {
             Status = "PAYMENT_FAILED",
-            Reason = $"Saga Compensating Rollback: {failure.Reason}"
+            Reason = $"Saga Compensating Rollback Executed: {failure.Reason}",
+            PaymentOutcome = $"FAILED & COMPENSATED: {failure.Reason}"
         };
 
-        // Roll state back in Redis so no reservations remain orphaned[cite: 1]
         await daprClient.SaveStateAsync(StateStoreName, failure.Id, compensatedState);
-        Console.WriteLine($"[Workflow Service] 🔄 Status rolled back to [PAYMENT_FAILED] in Redis.");
+        LogStructured(correlationId, $"Saga completed. Status rolled back to [PAYMENT_FAILED] in Redis.");
     }
 
     return Results.Ok();
 })
-.WithTopic("pubsub", "payment_failed");
+.WithTopic("pubsub", "payment_failed")
+.WithName("payment_failed");
+
+// --- ENDPOINT 7: Auditor Decision Trail (Requirement F9) ---
+app.MapGet("/api/audit/{id}", async (string id, DaprClient daprClient) =>
+{
+    var state = await daprClient.GetStateAsync<WorkflowState>(StateStoreName, id);
+    if (state == null) return Results.NotFound(new { error = "Audit trail not found for invoice ID." });
+
+    var auditReport = new
+    {
+        CorrelationId = state.CorrelationId ?? "N/A",
+        TrackingId = state.Id,
+        CurrentStatus = state.Status,
+        WhoMadeFinalCall = state.FinalActor,
+        PaymentOutcome = state.PaymentOutcome,
+        RulesApplied = state.Violations,
+        AgentReasoning = state.Reason,
+        ExtractedData = state.Payload
+    };
+
+    return Results.Ok(auditReport);
+});
+
+// --- ENDPOINT 8: Controller Dashboard Metrics (Requirement F8) ---
+app.MapGet("/api/dashboard/metrics", async (DaprClient daprClient) =>
+{
+    var entry = await daprClient.GetStateEntryAsync<DashboardMetrics>(StateStoreName, MetricsKey);
+    var m = entry.Value ?? new DashboardMetrics();
+
+    double totalProcessed = m.AutoApprovedCount + m.EscalatedCount;
+    double autoRate = totalProcessed > 0 ? Math.Round((m.AutoApprovedCount / totalProcessed) * 100, 1) : 0.0;
+    double escalationRate = totalProcessed > 0 ? Math.Round((m.EscalatedCount / totalProcessed) * 100, 1) : 0.0;
+
+    return Results.Ok(new
+    {
+        throughput = new { totalSubmissions = m.TotalSubmissions, totalEvaluated = totalProcessed },
+        rates = new { autoApprovalRatePct = autoRate, escalationRatePct = escalationRate },
+        financials = new
+        {
+            autoApprovedDollars = Math.Round(m.AutoApprovedAmount, 2),
+            humanApprovedDollars = Math.Round(m.HumanApprovedAmount, 2),
+            totalApprovedDollars = Math.Round(m.AutoApprovedAmount + m.HumanApprovedAmount, 2)
+        },
+        counts = new
+        {
+            autoApproved = m.AutoApprovedCount,
+            humanApproved = m.HumanApprovedCount,
+            escalatedToHuman = m.EscalatedCount
+        }
+    });
+});
 
 app.Run();
 
@@ -196,8 +466,25 @@ public record InvoiceSubmission(
     string? Date, string? Notes, string? Description
 );
 
-public record WorkflowState(string Id, InvoiceSubmission Payload, string Status, List<string> Violations, string Reason);
+public record WorkflowState(
+    string Id, 
+    InvoiceSubmission Payload, 
+    string Status, 
+    List<string> Violations, 
+    string Reason,
+    string? CorrelationId = null,
+    string? FinalActor = "Pending Evaluation",
+    string? PaymentOutcome = "Awaiting Processing"
+);
 public record EvaluationResult(string Id, string Route, List<string> Violations, string Reason);
 public record HumanActionRequest(string Action, string Notes);
-
 public record PaymentFailureNotification(string Id, string Reason);
+
+public record DashboardMetrics(
+    int TotalSubmissions = 0,
+    int AutoApprovedCount = 0,
+    double AutoApprovedAmount = 0.0,
+    int HumanApprovedCount = 0,
+    double HumanApprovedAmount = 0.0,
+    int EscalatedCount = 0
+);

@@ -10,9 +10,9 @@ class LineItem {
   });
 
   Map<String, dynamic> toJson() => {
-    'Description': description,
-    'Quantity': quantity,
-    'UnitPrice': unitPrice,
+    'description': description,
+    'quantity': quantity,
+    'unitPrice': unitPrice,
   };
 }
 
@@ -22,6 +22,8 @@ class InvoiceSubmission {
   final String currency;
   final String description;
   final bool receiptPresent;
+  final String department;
+  final String category;
   final List<LineItem>? lineItems;
 
   InvoiceSubmission({
@@ -30,17 +32,21 @@ class InvoiceSubmission {
     this.currency = 'USD',
     required this.description,
     this.receiptPresent = true,
+    this.department = 'engineering-2026Q2',
+    this.category = 'hardware',
     this.lineItems,
   });
 
   Map<String, dynamic> toJson() => {
-    'Vendor': vendor,
-    'Total': total,
-    'Currency': currency,
-    'Description': description,
-    'ReceiptPresent': receiptPresent,
+    'vendor': vendor,
+    'total': total,
+    'currency': currency,
+    'description': description,
+    'receiptPresent': receiptPresent,
+    'department': department,
+    'category': category,
     if (lineItems != null)
-      'LineItems': lineItems!.map((item) => item.toJson()).toList(),
+      'lineItems': lineItems!.map((item) => item.toJson()).toList(),
   };
 }
 
@@ -49,6 +55,9 @@ class WorkflowState {
   final String status;
   final List<String> violations;
   final String reason;
+  final String? correlationId;
+  final String? finalActor;
+  final String? paymentOutcome;
   final Map<String, dynamic>? payload;
 
   WorkflowState({
@@ -56,6 +65,9 @@ class WorkflowState {
     required this.status,
     required this.violations,
     required this.reason,
+    this.correlationId,
+    this.finalActor,
+    this.paymentOutcome,
     this.payload,
   });
 
@@ -65,6 +77,9 @@ class WorkflowState {
       status: json['status'] ?? 'UNKNOWN',
       violations: List<String>.from(json['violations'] ?? []),
       reason: json['reason'] ?? 'No reason provided.',
+      correlationId: json['correlationId'],
+      finalActor: json['finalActor'],
+      paymentOutcome: json['paymentOutcome'],
       payload: json['payload'],
     );
   }

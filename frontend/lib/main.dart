@@ -41,7 +41,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final TextEditingController _vendorController = TextEditingController(text: 'RackSpace Supplies');
   final TextEditingController _totalController = TextEditingController(text: '9500.00');
   final TextEditingController _descController = TextEditingController(text: 'Server rack components.');
+
   bool _hasReceipt = true;
+  String _selectedDept = 'engineering-2026Q2';
+  String _selectedCategory = 'hardware';
 
   // Tracker State
   final TextEditingController _trackingIdController = TextEditingController();
@@ -80,6 +83,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       vendor: _vendorController.text.trim(),
       total: total,
       description: _descController.text.trim(),
+      receiptPresent: _hasReceipt,
+      department: _selectedDept,
+      category: _selectedCategory,
     );
 
     final trackingId = await _apiService.submitInvoice(submission);
@@ -89,7 +95,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       await _fetchState(trackingId);
       _startAutoRefresh(trackingId);
     } else {
-      setState(() => _errorMessage = 'Failed to submit invoice. Is the backend running?');
+      setState(() => _errorMessage = 'Failed to submit invoice. Is docker compose up running?');
     }
 
     setState(() => _isSubmitting = false);
@@ -124,15 +130,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_currentState == null) return;
     setState(() => _isPolling = true);
 
+    String note = action == 'APPROVE'
+        ? 'Manager signoff verified via UI.'
+        : action == 'SEND_BACK'
+            ? 'Please attach itemized CFO approval.'
+            : 'Rejected by manager via UI.';
+
     final updatedState = await _apiService.executeAction(
       _currentState!.id,
       action,
-      'Manager override executed via Flutter UI ($action).',
+      note,
     );
 
     if (updatedState != null) {
       setState(() => _currentState = updatedState);
-      // If approved, poll briefly to watch the Saga Payment Service execute
       if (action == 'APPROVE') {
         Timer(const Duration(seconds: 2), () => _fetchState(_currentState!.id));
       }
@@ -142,10 +153,68 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  void _applyPreset(String vendor, String total, String desc) {
-    _vendorController.text = vendor;
-    _totalController.text = total;
-    _descController.text = desc;
+  void _applyPreset(String vendor, String total, String desc, String dept, String cat, bool receipt) {
+    setState(() {
+      _vendorController.text = vendor;
+      _totalController.text = total;
+      _descController.text = desc;
+      _selectedDept = dept;
+      _selectedCategory = cat;
+      _hasReceipt = receipt;
+    });
+  }
+
+  void _showMetricsModal() async {
+    final metrics = await _apiService.getDashboardMetrics();
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.analytics, color: Colors.indigo),
+            SizedBox(width: 8),
+            Text('F8 Controller Executive Dashboard'),
+          ],
+        ),
+        content: metrics == null
+            ? const Text('Failed to load live metrics from server.')
+            : SizedBox(
+                width: 450,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ListTile(
+                      title: const Text('Auto-Approval Rate (Efficiency)'),
+                      trailing: Text('${metrics['rates']['autoApprovalRatePct']}%', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.green)),
+                    ),
+                    ListTile(
+                      title: const Text('Escalation Rate (Human-in-Loop)'),
+                      trailing: Text('${metrics['rates']['escalationRatePct']}%', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.amber)),
+                    ),
+                    const Divider(),
+                    ListTile(
+                      title: const Text('Autonomous Dollars Approved'),
+                      trailing: Text('\$${metrics['financials']['autoApprovedDollars']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    ListTile(
+                      title: const Text('Human Dollars Approved'),
+                      trailing: Text('\$${metrics['financials']['humanApprovedDollars']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    const Divider(),
+                    ListTile(
+                      title: const Text('Total Throughput Processed'),
+                      trailing: Text('${metrics['throughput']['totalEvaluated']} items', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+              ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        ],
+      ),
+    );
   }
 
   // --- UI Helpers ---
@@ -153,11 +222,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Color _getStatusColor(String status) {
     switch (status) {
       case 'APPROVED':
+      case 'BUDGET_RESERVED':
         return Colors.green;
       case 'PENDING_HUMAN_REVIEW':
         return Colors.amber.shade800;
+      case 'PENDING_MORE_INFO':
+        return Colors.purple.shade700;
       case 'PAYMENT_FAILED':
       case 'REJECTED':
+      case 'REJECTED_INSUFFICIENT_BUDGET':
         return Colors.red;
       case 'DUPLICATE_DISCARDED':
         return Colors.orange;
@@ -177,12 +250,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Text('ZioNet AI Microservice Portal', style: TextStyle(fontWeight: FontWeight.bold)),
           ],
         ),
+        actions: [
+          FilledButton.tonalIcon(
+            onPressed: _showMetricsModal,
+            icon: const Icon(Icons.bar_chart),
+            label: const Text('Live Controller Metrics (F8)'),
+          ),
+          const SizedBox(width: 16),
+        ],
         backgroundColor: Theme.of(context).colorScheme.surfaceVariant,
         elevation: 1,
       ),
       body: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1100),
+          constraints: const BoxConstraints(maxWidth: 1150),
           child: Padding(
             padding: const EdgeInsets.all(24.0),
             child: Column(
@@ -203,17 +284,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Left Panel: Submission Form
-                      Expanded(
-                        flex: 5,
-                        child: _buildSubmissionCard(),
-                      ),
+                      Expanded(flex: 5, child: _buildSubmissionCard()),
                       const SizedBox(width: 24),
-                      // Right Panel: Live Inspector & HITL Actions
-                      Expanded(
-                        flex: 6,
-                        child: _buildInspectorCard(),
-                      ),
+                      Expanded(flex: 6, child: _buildInspectorCard()),
                     ],
                   ),
                 ),
@@ -226,132 +299,107 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildSubmissionCard() {
-  return Card(
-    elevation: 2,
-    child: Padding(
-      padding: const EdgeInsets.all(20.0),
-      child: Column(
-        mainAxisSize: MainAxisSize.min, // Prevents unbounded layout errors
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            '1. Submit New Invoice',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const Divider(),
-          const SizedBox(height: 8),
-
-          // 1. Quick Presets Section (Label + Chips grouped together)
-          const Text(
-            'Quick Presets:',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8, // Handles clean spacing if chips wrap to line 2
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ActionChip(
-                label: const Text('💥 Saga Rollback (\$9,500 RackSpace)'),
-                onPressed: () => _applyPreset(
-                  'RackSpace Supplies',
-                  '9500.00',
-                  'Server rack components.',
-                ),
+              const Text('1. Submit New Invoice', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const Divider(),
+              const SizedBox(height: 8),
+
+              const Text('Quick Presets:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey)),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ActionChip(
+                    label: const Text('💥 Saga Rollback (\$9,500)'),
+                    onPressed: () => _applyPreset('RackSpace Supplies', '9500.00', 'Server rack components.', 'engineering-2026Q2', 'hardware', true),
+                  ),
+                  ActionChip(
+                    label: const Text('✅ Auto-Approve (\$42 Meal)'),
+                    onPressed: () => _applyPreset('Bistro 19', '42.00', 'Team lunch meeting.', 'engineering-2026Q2', 'meals', true),
+                  ),
+                  ActionChip(
+                    label: const Text('⚠️ Escalate (\$300 SaaS)'),
+                    onPressed: () => _applyPreset('PixelForge', '300.00', 'Design tool license.', 'sales-2026Q2', 'saas', true),
+                  ),
+                ],
               ),
-              ActionChip(
-                label: const Text('✅ Auto-Approve (\$150 Office)'),
-                onPressed: () => _applyPreset(
-                  'Staples Office Depot',
-                  '150.00',
-                  'Printer paper and pens.',
+              const SizedBox(height: 16),
+
+              TextField(
+                controller: _vendorController,
+                decoration: const InputDecoration(labelText: 'Vendor Name', border: OutlineInputBorder(), prefixIcon: Icon(Icons.store)),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _totalController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'Total Amount (\$ USD)', border: OutlineInputBorder(), prefixIcon: Icon(Icons.attach_money)),
+              ),
+              const SizedBox(height: 12),
+
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _selectedDept,
+                      decoration: const InputDecoration(labelText: 'Department', border: OutlineInputBorder()),
+                      items: ['engineering-2026Q2', 'sales-2026Q2', 'marketing-2026Q2'].map((d) => DropdownMenuItem(value: d, child: Text(d, style: const TextStyle(fontSize: 13)))).toList(),
+                      onChanged: (v) => setState(() => _selectedDept = v!),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _selectedCategory,
+                      decoration: const InputDecoration(labelText: 'Category', border: OutlineInputBorder()),
+                      items: ['hardware', 'meals', 'travel', 'saas', 'other'].map((c) => DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(fontSize: 13)))).toList(),
+                      onChanged: (v) => setState(() => _selectedCategory = v!),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              TextField(
+                controller: _descController,
+                maxLines: 2,
+                decoration: const InputDecoration(labelText: 'Description / Notes', border: OutlineInputBorder(), prefixIcon: Icon(Icons.description)),
+              ),
+              const SizedBox(height: 12),
+
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Receipt Attached / Verified', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                subtitle: Text(_hasReceipt ? 'Passes receipt verification check' : 'Will trigger missing receipt violation', style: const TextStyle(fontSize: 12)),
+                value: _hasReceipt,
+                onChanged: (val) => setState(() => _hasReceipt = val),
+                secondary: Icon(_hasReceipt ? Icons.receipt_long : Icons.no_sim, color: _hasReceipt ? Colors.green : Colors.grey),
+              ),
+              const SizedBox(height: 16),
+
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: FilledButton.icon(
+                  onPressed: _isSubmitting ? null : _submitInvoice,
+                  icon: _isSubmitting ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Icon(Icons.send),
+                  label: Text(_isSubmitting ? 'Submitting to Engine...' : 'Submit Invoice to Workflow'),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 16),
-
-          // 2. Core Invoice Input Fields
-          TextField(
-            controller: _vendorController,
-            decoration: const InputDecoration(
-              labelText: 'Vendor Name',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.store),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _totalController,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              labelText: 'Total Amount (\$ USD)',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.attach_money),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _descController,
-            maxLines: 2,
-            decoration: const InputDecoration(
-              labelText: 'Description / Notes',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.description),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          // 3. Receipt Verification Toggle
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero, // Aligns flush with TextFields
-            title: const Text(
-              'Receipt Attached / Verified',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-            ),
-            subtitle: Text(
-              _hasReceipt
-                  ? 'Will pass receipt policy check'
-                  : 'Will flag missing receipt violation',
-              style: const TextStyle(fontSize: 12),
-            ),
-            value: _hasReceipt,
-            onChanged: (val) => setState(() => _hasReceipt = val),
-            secondary: Icon(
-              _hasReceipt ? Icons.receipt_long : Icons.no_sim,
-              color: _hasReceipt ? Colors.green : Colors.grey,
-            ),
-          ),
-          const SizedBox(height: 20),
-
-          // 4. Action Button
-          SizedBox(
-            width: double.infinity,
-            height: 48,
-            child: FilledButton.icon(
-              onPressed: _isSubmitting ? null : _submitInvoice,
-              icon: _isSubmitting
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
-                      ),
-                    )
-                  : const Icon(Icons.send),
-              label: Text(
-                _isSubmitting
-                    ? 'Submitting to C# Engine...'
-                    : 'Submit Invoice to Workflow',
-              ),
-            ),
-          ),
-        ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget _buildInspectorCard() {
     return Card(
@@ -368,12 +416,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Expanded(
                   child: TextField(
                     controller: _trackingIdController,
-                    decoration: const InputDecoration(
-                      labelText: 'Tracking ID (Guid)',
-                      hintText: 'Enter invoice UUID...',
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                    ),
+                    decoration: const InputDecoration(labelText: 'Tracking ID (Guid)', hintText: 'Enter invoice UUID...', isDense: true, border: OutlineInputBorder()),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -415,7 +458,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
           ),
+          const SizedBox(height: 12),
+
+          // F9 Auditor Meta Banner
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: Colors.indigo.shade50, borderRadius: BorderRadius.circular(6)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Correlation ID: ${state.correlationId ?? "N/A"}', style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+                const SizedBox(height: 2),
+                Text('Final Actor: ${state.finalActor ?? "Pending"}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.indigo.shade900)),
+                const SizedBox(height: 2),
+                Text('Outcome: ${state.paymentOutcome ?? "Processing..."}', style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic)),
+              ],
+            ),
+          ),
           const SizedBox(height: 16),
+
           if (state.violations.isNotEmpty) ...[
             const Text('AI Policy Violations Flagged:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
             const SizedBox(height: 4),
@@ -433,8 +494,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(6)),
             child: Text(state.reason.isEmpty ? 'No notes provided.' : state.reason, style: const TextStyle(fontFamily: 'monospace')),
           ),
-          // HITL Dashboard Actions
-          if (state.status == 'PENDING_HUMAN_REVIEW') ...[
+
+          // HITL Dashboard Actions (Requirement F5)
+          if (state.status == 'PENDING_HUMAN_REVIEW' || state.status == 'PENDING_MORE_INFO') ...[
             const Divider(),
             const Text('⚠️ Human-in-the-Loop Intervention Required', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
             const SizedBox(height: 8),
@@ -444,17 +506,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: FilledButton.icon(
                     style: FilledButton.styleFrom(backgroundColor: Colors.green),
                     onPressed: () => _executeHitlAction('APPROVE'),
-                    icon: const Icon(Icons.check),
-                    label: const Text('Approve (& Trigger Payment Saga)'),
+                    icon: const Icon(Icons.check, size: 16),
+                    label: const Text('Approve', style: TextStyle(fontSize: 12)),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(backgroundColor: Colors.purple),
+                    onPressed: () => _executeHitlAction('SEND_BACK'),
+                    icon: const Icon(Icons.reply, size: 16),
+                    label: const Text('Send Back', style: TextStyle(fontSize: 12)),
+                  ),
+                ),
+                const SizedBox(width: 8),
                 Expanded(
                   child: FilledButton.icon(
                     style: FilledButton.styleFrom(backgroundColor: Colors.red),
                     onPressed: () => _executeHitlAction('REJECT'),
-                    icon: const Icon(Icons.close),
-                    label: const Text('Reject Invoice'),
+                    icon: const Icon(Icons.close, size: 16),
+                    label: const Text('Reject', style: TextStyle(fontSize: 12)),
                   ),
                 ),
               ],

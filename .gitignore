@@ -1,2 +1,20 @@
-# Secrets
+# Secrets and Environments
 .env
+*.env
+
+# .NET Build Artifacts
+**/bin/
+**/obj/
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# Flutter / Dart Build
+**/.dart_tool/
+**/build/
+
+# OS/IDE Clutter
+.DS_Store
+.vscode/
+.idea/
