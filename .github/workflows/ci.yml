@@ -1,26 +1,38 @@
-name: ZioNet ApprovalFlow CI Quality Gate
+name: ApprovalFlow CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "dev" ]
+    branches: [ "main", "dev", "feature/*" ]
   pull_request:
     branches: [ "main" ]
 
 jobs:
-  build-and-verify:
-    name: Build Microservice Cluster & Run Quality Gates (M16/M17)
+  # =========================================================================
+  # JOB 1: CI QUALITY GATES & VERIFICATION (Requirements M16, M17, D5)
+  # =========================================================================
+  ci-quality-gate:
+    name: Build Microservice Cluster & Run Quality Gates
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Configure CI Environment Variables
+      - name: Configure CI Environment Variables & Dummy Secrets
         run: |
-          # Use mock provider during CI so tests run fast and without external API keys (M15)
+          echo "Configuring CI environment for swappable mock execution..."
           echo "LLM_PROVIDER=mock" >> $GITHUB_ENV
           echo "AUTONOMY_CEILING=250.0" >> $GITHUB_ENV
           echo "DAPR_HTTP_PORT=3500" >> $GITHUB_ENV
+
+          # Create dummy secrets file so Dapr local secretstore mounts cleanly
+          mkdir -p dapr-components
+          cat <<EOF > dapr-components/secrets.json
+          {
+            "GEMINI_API_KEY": "dummy_ci_key_mock_mode",
+            "AUTONOMY_CEILING": "250.0"
+          }
+          EOF
 
       - name: Boot Microservice Stack via Docker Compose (M4)
         run: |
@@ -33,13 +45,70 @@ jobs:
           sleep 15
           docker compose ps
 
-      - name: Execute Automated Verification Suite (M17)
+      - name: Execute Core Journeys Verification Suite (M17 / D5)
         shell: pwsh
         run: |
-          ./run-ci-tests.ps1
+          # Run the core journeys regression harness
+          ./run-core-journeys.ps1
 
       - name: Dump Container Logs on Failure
         if: failure()
         run: |
           echo "❌ Quality Gate Failed! Dumping logs for diagnostics:"
           docker compose logs --tail=50
+
+  # =========================================================================
+  # JOB 2: CD ARTIFACT PUBLISHING (Requirement N2)
+  # =========================================================================
+  cd-publish-artifacts:
+    name: Build & Publish Container Images to GHCR
+    needs: ci-quality-gate
+    # Only run CD on push events (not pull requests) after CI passes cleanly
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Convert Repository Name to Lowercase for GHCR
+        run: |
+          echo "REPO_LOWER=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Build and Push API Gateway Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api-gateway
+          push: true
+          tags: ghcr.io/${{ env.REPO_LOWER }}/api-gateway:latest,ghcr.io/${{ env.REPO_LOWER }}/api-gateway:${{ github.sha }}
+
+      - name: Build and Push Workflow Service Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./workflow-service
+          push: true
+          tags: ghcr.io/${{ env.REPO_LOWER }}/workflow-service:latest,ghcr.io/${{ env.REPO_LOWER }}/workflow-service:${{ github.sha }}
+
+      - name: Build and Push AI Service Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ai-service
+          push: true
+          tags: ghcr.io/${{ env.REPO_LOWER }}/ai-service:latest,ghcr.io/${{ env.REPO_LOWER }}/ai-service:${{ github.sha }}
+
+      - name: Build and Push Payment Service Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./payment-service
+          push: true
+          tags: ghcr.io/${{ env.REPO_LOWER }}/payment-service:latest,ghcr.io/${{ env.REPO_LOWER }}/payment-service:${{ github.sha }}
