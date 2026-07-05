@@ -6,6 +6,7 @@ from dapr.clients import DaprClient
 from datetime import datetime
 from typing import Optional
 import uvicorn
+from otel_tracing import setup_opentelemetry, set_span_correlation_id
 
 # AI Imports
 from pydantic import BaseModel, Field
@@ -16,7 +17,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from retriever import policy_retriever
 
 app = FastAPI(title="ApprovalFlow AI Service")
-
+setup_opentelemetry(app, service_name="ai-service")
 
 # =========================================================================
 # STRUCTURED JSON LOGGER (Requirement M14)
@@ -216,6 +217,10 @@ async def evaluate_invoice(request: Request):
 
     tracking_id = get_field(data, "id", "Id", default="UNKNOWN")
     correlation_id = get_field(data, "CorrelationId", "correlationId") or request.headers.get("X-Correlation-ID")
+
+    if correlation_id:
+        set_span_correlation_id(correlation_id)
+
     payload = get_field(data, "payload", "Payload", default={})
 
     total = float(get_field(payload, "total", "Total", default=0.0))

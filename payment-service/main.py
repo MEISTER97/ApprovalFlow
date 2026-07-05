@@ -3,9 +3,11 @@ import json
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 from dapr.clients import DaprClient
+from otel_tracing import setup_opentelemetry, set_span_correlation_id
 import uvicorn
 
 app = FastAPI()
+setup_opentelemetry(app, service_name="payment-service")
 STATE_STORE_NAME = "statestore"
 
 
@@ -55,6 +57,10 @@ async def process_payment(request: Request):
     correlation_id = (
         data.get("CorrelationId") or data.get("correlationId") or tracking_id
     )
+
+    if correlation_id:
+        set_span_correlation_id(correlation_id)
+
     payload = data.get("Payload") or data.get("payload", {})
     vendor = payload.get("Vendor") or payload.get("vendor", "Unknown")
     total = float(payload.get("Total") or payload.get("total", 0.0))

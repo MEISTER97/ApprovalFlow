@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "3Jv/CxKPhMw=",
+  "dgSpecHash": "8u7lD4I9SWs=",
   "success": true,
   "projectFilePath": "E:\\Learning\\Zionet\\Final project\\Submission\\workflow-service\\workflow-service.csproj",
   "expectedPackageFiles": [
@@ -15,7 +15,14 @@
     "C:\\Users\\mantr\\.nuget\\packages\\grpc.net.common\\2.80.0\\grpc.net.common.2.80.0.nupkg.sha512",
     "C:\\Users\\mantr\\.nuget\\packages\\grpc.reflection\\2.80.0\\grpc.reflection.2.80.0.nupkg.sha512",
     "C:\\Users\\mantr\\.nuget\\packages\\microsoft.aspnetcore.openapi\\10.0.9\\microsoft.aspnetcore.openapi.10.0.9.nupkg.sha512",
-    "C:\\Users\\mantr\\.nuget\\packages\\microsoft.openapi\\2.0.0\\microsoft.openapi.2.0.0.nupkg.sha512"
+    "C:\\Users\\mantr\\.nuget\\packages\\microsoft.openapi\\2.0.0\\microsoft.openapi.2.0.0.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\opentelemetry\\1.8.1\\opentelemetry.1.8.1.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\opentelemetry.api\\1.8.1\\opentelemetry.api.1.8.1.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\opentelemetry.api.providerbuilderextensions\\1.8.1\\opentelemetry.api.providerbuilderextensions.1.8.1.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\opentelemetry.exporter.opentelemetryprotocol\\1.8.1\\opentelemetry.exporter.opentelemetryprotocol.1.8.1.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\opentelemetry.extensions.hosting\\1.8.1\\opentelemetry.extensions.hosting.1.8.1.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\opentelemetry.instrumentation.aspnetcore\\1.8.1\\opentelemetry.instrumentation.aspnetcore.1.8.1.nupkg.sha512",
+    "C:\\Users\\mantr\\.nuget\\packages\\opentelemetry.instrumentation.http\\1.8.1\\opentelemetry.instrumentation.http.1.8.1.nupkg.sha512"
   ],
   "logs": [
     {
@@ -26,6 +33,30 @@
       "warningLevel": 1,
       "filePath": "E:\\Learning\\Zionet\\Final project\\Submission\\workflow-service\\workflow-service.csproj",
       "libraryId": "Microsoft.OpenApi",
+      "targetGraphs": [
+        "net10.0"
+      ]
+    },
+    {
+      "code": "NU1902",
+      "level": "Warning",
+      "message": "Package 'OpenTelemetry.Api' 1.8.1 has a known moderate severity vulnerability, https://github.com/advisories/GHSA-g94r-2vxg-569j",
+      "projectPath": "E:\\Learning\\Zionet\\Final project\\Submission\\workflow-service\\workflow-service.csproj",
+      "warningLevel": 1,
+      "filePath": "E:\\Learning\\Zionet\\Final project\\Submission\\workflow-service\\workflow-service.csproj",
+      "libraryId": "OpenTelemetry.Api",
+      "targetGraphs": [
+        "net10.0"
+      ]
+    },
+    {
+      "code": "NU1902",
+      "level": "Warning",
+      "message": "Package 'OpenTelemetry.Exporter.OpenTelemetryProtocol' 1.8.1 has a known moderate severity vulnerability, https://github.com/advisories/GHSA-4625-4j76-fww9",
+      "projectPath": "E:\\Learning\\Zionet\\Final project\\Submission\\workflow-service\\workflow-service.csproj",
+      "warningLevel": 1,
+      "filePath": "E:\\Learning\\Zionet\\Final project\\Submission\\workflow-service\\workflow-service.csproj",
+      "libraryId": "OpenTelemetry.Exporter.OpenTelemetryProtocol",
       "targetGraphs": [
         "net10.0"
       ]

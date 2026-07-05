@@ -1,8 +1,28 @@
 using Dapr.Client;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
+using OpenTelemetry.Trace;
+using OpenTelemetry.Resources;
+using System.Diagnostics;
+using OpenTelemetry.Exporter;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// --- REQUIREMENT N4: OpenTelemetry Tracing ---
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracerProviderBuilder =>
+    {
+        tracerProviderBuilder
+            .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("workflow-service"))
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddOtlpExporter(options =>
+            {
+                var endpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT") ?? "http://jaeger:4318/v1/traces";
+                options.Endpoint = new Uri(endpoint);
+                options.Protocol = OtlpExportProtocol.HttpProtobuf; 
+            });
+    });
 
 // Register Dapr Client
 builder.Services.AddDaprClient();

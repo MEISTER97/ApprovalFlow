@@ -8,10 +8,12 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi.middleware.cors import CORSMiddleware
+from otel_tracing import setup_opentelemetry, set_span_correlation_id
 
 # Initialize rate limiter: Max 60 requests per minute per IP address
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app = FastAPI(title="ApprovalFlow API Gateway")
+setup_opentelemetry(app, service_name="api-gateway")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows Flutter Web on any local port
@@ -40,6 +42,8 @@ async def correlation_id_middleware(request: Request, call_next):
         correlation_id = str(uuid.uuid4())
 
     request.state.correlation_id = correlation_id
+
+    set_span_correlation_id(correlation_id)
 
     start_time = time.time()
     response: Response = await call_next(request)
