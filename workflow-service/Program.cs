@@ -454,6 +454,38 @@ app.MapGet("/api/dashboard/metrics", async (DaprClient daprClient) =>
     });
 });
 
+// --- ENDPOINT 9: Saga Final Completion (Catch Payment Success) ---
+app.MapPost("/api/workflow/payment-succeeded", async ([FromBody] PaymentSuccessNotification success, DaprClient daprClient) =>
+{
+    var currentState = await daprClient.GetStateAsync<WorkflowState>(StateStoreName, success.Id);
+    string correlationId = currentState?.CorrelationId ?? success.CorrelationId ?? success.Id;
+
+    LogStructured(correlationId, $"SAGA FINALIZED for Invoice {success.Id}: Payment Successful.");
+
+    if (currentState != null)
+    {
+        // Idempotency: Ignore if already marked PAID
+        if (currentState.Status == "PAID")
+        {
+            LogStructured(correlationId, $"Idempotency Hit: Invoice {success.Id} is already marked PAID.");
+            return Results.Ok();
+        }
+
+        var finalizedState = currentState with
+        {
+            Status = "PAID",
+            PaymentOutcome = $"PAID: Successfully transferred ${success.Amount:F2}"
+        };
+
+        await daprClient.SaveStateAsync(StateStoreName, success.Id, finalizedState);
+        LogStructured(correlationId, $"Workflow finalized. Status updated to [PAID] in Redis.");
+    }
+
+    return Results.Ok();
+})
+.WithTopic("pubsub", "payment_succeeded")
+.WithName("payment_succeeded");
+
 app.Run();
 
 // Core Data Structures Aligned with Grading and Plan Schemas
@@ -479,6 +511,7 @@ public record WorkflowState(
 public record EvaluationResult(string Id, string Route, List<string> Violations, string Reason);
 public record HumanActionRequest(string Action, string Notes);
 public record PaymentFailureNotification(string Id, string Reason);
+public record PaymentSuccessNotification(string Id, string Status, double Amount, string? CorrelationId = null);
 
 public record DashboardMetrics(
     int TotalSubmissions = 0,

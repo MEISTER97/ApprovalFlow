@@ -61,15 +61,17 @@ foreach ($item in $fixtures) {
     }
 
     # Handle scenario overrides for stateful saga tests
-    if ($item.id -eq "INV-1012") { $expectedStatus = "PAYMENT_FAILED" }
+    if ($item.id -eq "INV-1014A") { $expectedStatus = "BUDGET_RESERVED" }
     if ($item.id -eq "INV-1014B") { $expectedStatus = "REJECTED_INSUFFICIENT_BUDGET" }
+    if ($item.id -eq "INV-1012")  { $expectedStatus = "PAYMENT_FAILED" }
 
     try {
         $actual = Invoke-RestMethod -Uri "$GatewayUrl/api/invoices/$($item.id)" -Method Get
         $status = $actual.status
 
-        # Treat APPROVED and BUDGET_RESERVED equivalently for auto-approval grading
-        if ($status -eq $expectedStatus -or ($expectedStatus -eq "BUDGET_RESERVED" -and $status -eq "APPROVED")) {
+        # Treat APPROVED, BUDGET_RESERVED, and PAID equivalently for auto-approval grading
+        if ($status -eq $expectedStatus -or 
+            ($expectedStatus -in @("BUDGET_RESERVED", "APPROVED") -and $status -in @("BUDGET_RESERVED", "APPROVED", "PAID"))) {
             Write-Host " [PASS] $($item.id.PadRight(10)) | Expected: $($expectedStatus.PadRight(28)) | Actual: $status" -ForegroundColor Green
             $Passed++
         } else {

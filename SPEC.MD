@@ -4,134 +4,140 @@ Last reviewed: 2026-07-04
 
 ## Assignment Goal
 
-Build ApprovalFlow, a local, free-to-run, microservice-based, AI-assisted invoice and expense approval platform. The system must accept invoice submissions asynchronously, evaluate them against an externally configurable policy, auto-approve only safe low-risk items, escalate risky or unclear items to a human approver, process approved payments with compensation on failure, and provide an auditable decision trail linked by correlation id.
+Build ApprovalFlow, a local, free-to-run, microservice-based, AI-assisted invoice and expense approval platform. The system must accept invoices asynchronously, evaluate them against a configurable policy, auto-approve only safe low-risk items, route risky or unclear items to a human approver, process approved payments with compensation on failure, and expose an auditable decision trail linked by correlation id.
 
-The highest priority is to finish every Must-Have and required development-process item before adding Nice-to-Have or Bonus work.
+Priority order remains:
+
+1. Finish every Must-Have and required development-process item.
+2. Then complete Nice-to-Have work.
+3. Then attempt Bonus items.
 
 ## Current Project Snapshot
 
-The repository currently contains:
+The project now contains:
 
-- `workflow-service`: .NET minimal API service that accepts invoices, stores workflow state in Dapr state, publishes/subscribes via Dapr pub/sub, pauses for human review, resumes after manager approval, and handles payment-failed compensation events.
-- `ai-service`: FastAPI service that subscribes to submitted invoices, loads `policy.md`, applies deterministic checks for duplicate, math mismatch, and hard autonomy ceiling, calls Gemini through LangChain for policy routing, then publishes an evaluation result.
-- `payment-service`: FastAPI service that subscribes to approved invoices, applies a payment idempotency guard, simulates a forced failure for `INV-1012`, stores paid ledger state, and publishes success/failure events.
-- `frontend`: Flutter UI that can submit an invoice, poll status, and approve/reject an escalated item.
+- `api-gateway`: FastAPI gateway on port `8080`, with rate limiting, correlation-id middleware, CORS, `/healthz`, and Dapr service invocation forwarding to `workflow-service`.
+- `workflow-service`: .NET minimal API service that stores workflow state in Dapr state, receives evaluated invoices, manages escalation queue state, handles human actions, reserves/releases department budgets, exposes audit and dashboard endpoints, and writes structured JSON logs.
+- `ai-service`: FastAPI service that subscribes to `invoice_submitted`, applies deterministic pre-LLM guards, optionally calls Gemini or mock provider, applies post-LLM safety guards, and publishes `invoice_evaluated`.
+- `payment-service`: FastAPI service that subscribes to approved invoices, applies a ledger idempotency guard, simulates `INV-1012` payment failure, stores paid ledger state, and publishes payment success/failure events.
+- `frontend`: Flutter UI that submits invoices through the gateway, polls invoice state, supports approve/reject/send-back actions, displays correlation/audit metadata, and opens live controller metrics.
 - `dapr-components`: Redis pub/sub and Redis state-store components.
-- `docker-compose.yml`: Redis, Dapr placement, the three services, and Dapr sidecars.
-- `sample-invoices.json`: assignment fixtures.
-- `run-harness.ps1`: submits fixtures to the workflow API, but does not currently assert pass/fail outcomes.
+- `docker-compose.yml`: Redis, Dapr placement, API gateway, workflow service, AI service, payment service, and sidecars. Only the gateway is exposed to the host.
+- `.github/workflows/ci.yml`: CI job that builds the compose stack and runs `run-ci-tests.ps1`.
+- `run-ci-tests.ps1`: CI smoke/quality gate script against the gateway.
+- `run-core-journeys.ps1`: focused journey and anti-cheese verification script.
+- `run-harness.ps1`: all-fixture verification/report script.
+- `ARCHITECTURE.md`: architecture and payment saga diagrams.
+- `SPEC.MD` and `PLAN.MD`: this audit and execution plan.
 
 ## Product Posture
 
-Current effective autonomy posture:
+Current autonomy posture:
 
 - Default autonomy ceiling is USD 250.
-- Items above the ceiling are deterministically routed to human review before the LLM can auto-approve.
-- Math mismatch and duplicate detection are deterministic checks.
-- AI confidence below 0.80 is escalated when the model recommends auto-approval.
-- Unknown vendor, missing receipt, category caps, reject-only cases, fraud patterns, and prompt-injection resistance currently depend heavily on the LLM and should be moved into deterministic router code for proof and repeatability.
+- The AI service runs deterministic checks before model use for duplicate, math mismatch, receipt, vendor, FX, fraud signals, category hard stops, and autonomy ceiling.
+- A post-LLM guard re-blocks auto-approval above the ceiling and blocks low-confidence auto-approval.
+- `LLM_PROVIDER=mock` is available for deterministic CI/fallback behavior.
+- The model is treated as advisory; deterministic guards hold the core safety posture.
 
-Target posture for submission:
+Remaining posture gaps:
 
-- Keep the USD 250 ceiling unless intentionally changed and justified in `docs/PRODUCT-DILEMMA.md`.
-- Make every hard stop deterministic and testable before the LLM result is trusted.
-- Treat the LLM as a recommender only. The router must make the final decision.
+- Some policy details still appear simplified or fixture-focused. Examples: meal attendee limits, SaaS monthly cap, alcohol-only rejection, client entertainment details, and first/business-class travel should be explicitly deterministic if they are required by the fixtures or demo.
+- `run_pre_llm_guard` should be hardened against both camelCase and PascalCase payload keys for every checked field.
+- The mock provider currently auto-approves only `total_usd <= 150`; this may not match every expected auto-approve fixture such as `INV-1017` at USD 180.
+- A product-dilemma document is still missing. The USD 250 posture needs a written defense.
 
 ## Functional Requirements Status
 
 | ID | Requirement | Current status | Notes |
 | --- | --- | --- | --- |
-| F1 | Async submit with tracking id | Partial | `workflow-service` returns 202 with a generated tracking id and publishes to Dapr. Needs stable external gateway route and idempotent submitted fixture id handling. |
-| F2 | Status and plain-language reason | Partial | `GET /api/invoices/{id}` returns state and reason. Needs payment outcome and audit detail completeness. |
-| F3 | Duplicate not paid twice | Partial | AI service detects duplicates by vendor, invoice number, and total. Payment service has ledger idempotency by tracking id. Needs duplicate behavior to work with generated IDs and retries/redeliveries. |
-| F4 | Escalation queue with recommendation, confidence, cited rules | Missing/Partial | Escalation endpoint returns placeholder message. State stores violations/reason but not confidence or queue listing. |
-| F5 | Approve, reject, or send back; resume where paused | Partial | Approve/reject exists. Send-back-for-info is missing. Pause is state-backed. |
-| F6 | No rubber-stamping safe items | Partial | Auto-approve path exists. Needs deterministic category checks so eligible fixtures reliably auto-approve without human. |
-| F7 | Configure policy and thresholds without redeploy | Partial | `AUTONOMY_CEILING` is environment config and `policy.md` is file-based. Needs Dapr config/secrets or mounted external config and documented reload/update path. |
-| F8 | Throughput and approval dashboard | Missing | Frontend has tracker/manager actions but no aggregate dashboard. |
-| F9 | Complete decision trail by correlation id | Missing/Partial | State contains basic payload/status/violations/reason. Missing correlation-id propagation, structured logs, agent reasoning fields, final caller, and payment outcome trail. |
-| F10 | Prove never auto-approved above limit | Partial | Code has a hard ceiling guard. Needs automated tests/harness proving it, including adversarial "approve me" note. |
+| F1 | Async submit with tracking id | Mostly done | Gateway routes to workflow; workflow returns 202 with tracking id and correlation id, saves state, and publishes asynchronously. Need run verification. |
+| F2 | Status and plain-language reason | Mostly done | `GET /api/invoices/{id}` returns state/reason via gateway. Payment success state is not yet reflected back into workflow. |
+| F3 | Duplicate not paid twice | Partial | Duplicate guard and payment ledger exist. Needs stronger retry/redelivery idempotency and proof that duplicate submissions preserve one financial effect. |
+| F4 | Escalation queue with recommendation, confidence, cited rules | Partial | Durable escalation index exists and returns pending items. State includes reason/violations but not a separate confidence field or structured cited-rule detail. |
+| F5 | Approve, reject, or send back; resume where paused | Mostly done | Approve/reject/send-back actions exist. Approve resumes into budget reservation and payment event. Need restart-survival test. |
+| F6 | No rubber-stamping safe items | Partial | Auto-approve path exists and harness targets at least two auto-approvals. Deterministic category eligibility needs more complete coverage. |
+| F7 | Configure policy and thresholds without redeploy | Partial | `AUTONOMY_CEILING`, `LLM_PROVIDER`, and `policy.md` mount exist. Dapr config/secrets and a documented update path are still missing. |
+| F8 | Dashboard of throughput/rates/money | Mostly done | Workflow exposes `/api/dashboard/metrics`; gateway and Flutter call it. Need verify metrics correctness after full journey run. |
+| F9 | Complete decision trail by correlation id | Partial | Audit endpoint exists with correlation id, payload, rules, reason, actor, and payment outcome. Structured logs exist in gateway/workflow/AI. Payment-service still uses plain logs and success payment outcome is not sent back to workflow. |
+| F10 | Prove never auto-approved above limit | Partial | Pre/post LLM guards and anti-cheese harness exist. Need run evidence and add/keep CI coverage for over-ceiling + prompt injection. |
 
 ## Must-Have Requirements Status
 
 | ID | Requirement | Current status | Gap to close |
 | --- | --- | --- | --- |
-| M1 | Single private GitHub monorepo | Likely done | Repo is a monorepo. Privacy/contributors cannot be verified locally. |
-| M2 | Main holds evaluated submission and stops at deadline | Process item | Must be handled in GitHub before 2026-07-12 EOD. |
-| M3 | At least 3 containerized services | Done | Workflow, AI, and payment services each have Dockerfiles. |
-| M4 | Single `docker compose up` brings up system | Partial | Compose exists for services, Redis, Dapr sidecars. Frontend and API gateway are not included. Need verify full startup. |
-| M5 | Dapr sync, async, state, and secrets | Partial | Async pub/sub and state exist. Dapr sync service invocation is not evident. Dapr secrets are not configured. |
-| M6 | API gateway as only external entry point with rate limiting | Missing | `api-gateway` is empty and workflow service is exposed directly. |
-| M7 | Minimal UI | Partial | Flutter UI can submit/status/action. Needs compose/run docs and may need gateway URL. |
-| M8 | Async intake and notification channel | Partial | Async intake exists. Final result is polled, not delivered via notification channel. |
-| M9 | Payment consistency with compensation | Partial | Failure event updates state to `PAYMENT_FAILED`. No reservation step, no budget release, no atomic saga state, no concurrency protection. |
-| M10 | Idempotency for duplicate submissions, redelivered events, retried payments | Partial | Some guards exist. Needs event idempotency keys and retry-safe state transitions across services. |
-| M11 | Durable HITL pause/resume survives restart | Partial | Pause state is Redis-backed. Needs queue/index for escalations and verification after restart. |
-| M12 | Provably incapable of over-ceiling auto-approve | Partial | Hard ceiling exists. Needs deterministic tests and final-router enforcement after model output as defense in depth. |
-| M13 | Externally configurable policy/thresholds | Partial | Env var/file only. Needs Dapr config/secrets or mounted config with documented change path. |
-| M14 | Structured logs with correlation id on every line | Missing | Services use plain `print`/`Console.WriteLine`; no consistent correlation id. |
-| M15 | Clean code, error handling, health checks, separation, swappable LLM provider | Partial | Basic error handling exists. Missing health checks, provider abstraction/config, stronger validation, and cleaner module separation. |
-| M16 | CI quality gates on every push | Missing | `.github/workflows` appears empty. |
-| M17 | Automated tests in CI | Missing/Partial | Flutter smoke test exists, but no CI and little backend coverage. |
-| M18 | README with tech, run, test, system diagram | Missing | Only default Flutter README exists. Root README is missing. |
+| M1 | Single private GitHub monorepo | Likely done | Monorepo is present. Privacy/contributors cannot be verified locally. |
+| M2 | Main holds evaluated submission and stops at deadline | Process item | Must be handled in GitHub by 2026-07-12 EOD. |
+| M3 | At least 3 containerized services | Done | Gateway, workflow, AI, and payment are containerized. |
+| M4 | Single `docker compose up` brings up system | Mostly done | Compose includes gateway, services, Redis, placement, sidecars. Frontend is not in compose but can run separately. Full startup not verified in this pass. |
+| M5 | Dapr sync, async, state, and secrets | Partial | Async pub/sub, state, and sync service invocation through gateway are present. Dapr secrets component is still missing. |
+| M6 | API gateway as only external entry point with rate limiting | Mostly done | Gateway exists, has rate limits, and compose exposes only `8080` for app traffic. Placement port `50005` is still exposed for Dapr. |
+| M7 | Minimal UI | Mostly done | Flutter UI supports submit/status/HITL/metrics through gateway. Need smoke test update if UI text changed. |
+| M8 | Async intake and notification channel | Partial | Async intake exists. Final result is still polling, not a push notification channel. If polling is accepted as UI delivery, document it clearly. |
+| M9 | Consistent payment with compensation | Partial | Budget reservation/release and failure compensation exist in workflow. Payment success does not update workflow final state; atomic/concurrency guarantees depend on Dapr state entry save without explicit ETag handling. |
+| M10 | Idempotency for duplicates, redelivered events, retried payments | Partial | Duplicate and payment ledger guards exist. Missing processed-event idempotency for pub/sub redelivery and business-key ledger protection across generated IDs. |
+| M11 | Durable HITL pause/resume survives restart | Partial | Escalation queue and state are in Redis. Need restart test in harness or docs. |
+| M12 | Provably incapable of over-ceiling auto-approve | Mostly done | Pre-LLM and post-LLM guards exist. Need test evidence and possibly a unit test around forced approve recommendation. |
+| M13 | Externally configurable policy/thresholds | Partial | Env and mounted policy file exist. Dapr config/secrets or documented no-redeploy change procedure remains. |
+| M14 | Structured logs with correlation id on every line | Partial | Gateway, workflow, and AI use structured/correlation logging. Payment-service still uses plain `print` and does not propagate correlation id in logs/events. |
+| M15 | Clean code, error handling, health checks, separation, swappable LLM provider | Partial | Gateway/workflow/AI have health checks; AI provider is swappable. Payment-service lacks `/healthz`; some code remains monolithic and error handling is thin. |
+| M16 | CI quality gates on every push | Mostly done | GitHub Actions workflow exists and runs compose plus `run-ci-tests.ps1`. Needs a real run to confirm it passes. |
+| M17 | Automated tests in CI | Partial | CI smoke tests exist. Backend unit/integration tests are still light; current tests are mostly script-based E2E checks. |
+| M18 | README with tech, run, test, system diagram | Missing/Partial | `ARCHITECTURE.md` exists, but root `README.md` is still missing. |
 
 ## Required Development Process Status
 
 | ID | Requirement | Current status | Gap to close |
 | --- | --- | --- | --- |
-| D1 | `ARCHITECTURE.md` with sequence and payment compensation diagrams | Missing | Create architecture doc with Mermaid diagrams. |
-| D2 | ADRs for key decisions | Missing | Add short human-owned ADRs for autonomy posture, Dapr, saga/idempotency, LLM provider. |
-| D3 | GitHub Flow and repo hygiene | Partial | Git branch is `main` and clean. Missing `LICENSE`, `.env.example`; `.gitignore` is too small and does not ignore venv/build outputs. |
-| D4 | API documentation/OpenAPI | Partial | FastAPI and .NET can expose OpenAPI, but root API contract docs are missing. |
-| D5 | Single command verification of four journeys and anti-cheese guards | Partial | `run-harness.ps1` submits fixtures only. It does not assert results, payment outcomes, restart behavior, two auto-approvals, or prompt-injection guard. |
-| D6 | README documentation | Missing | Root README needed. |
-| D7 | 2-5 minute demo recording | Not in repo | Must be recorded and uploaded for submission. |
+| D1 | `ARCHITECTURE.md` with sequence and payment compensation diagrams | Mostly done | Architecture doc exists. It should be corrected where it says gateway publishes/saves state directly; current gateway forwards to workflow via Dapr invocation. It also says .NET 8 while csproj targets .NET 10. |
+| D2 | ADRs for key decisions | Missing | No `docs/adr/` files found. Add human-written ADRs. |
+| D3 | GitHub Flow and repo hygiene | Partial | `.gitignore` is much better. Still missing `LICENSE` and `.env.example`; `.venv/` should be explicitly ignored. Current branch is `main`; PR history cannot be verified locally. |
+| D4 | API docs/OpenAPI | Partial | FastAPI gateway has OpenAPI docs. Workflow has OpenAPI package but no visible Swagger mapping. Root API documentation is still missing. |
+| D5 | Single command verification | Partial/Mostly done | `run-core-journeys.ps1`, `run-harness.ps1`, and CI script now assert pass/fail. They still need to be run and may need fixes for timing, fresh state, PowerShell version, and expected final statuses. |
+| D6 | README documentation | Missing | Root README is still missing. |
+| D7 | 2-5 minute demo recording | Not in repo | Must be recorded/uploaded for submission. |
 
 ## Nice-To-Have Status
 
 | ID | Requirement | Current status | Notes |
 | --- | --- | --- | --- |
 | N1 | AuthN/AuthZ with roles | Missing | No JWT or role enforcement. |
-| N2 | CD build/publish artifacts | Missing | No CI/CD workflow yet. |
-| N3 | Outbox and bulkhead/throttling | Missing | No outbox; rate limiting absent. |
-| N4 | OpenTelemetry metrics and trace | Missing | No OTel setup. |
-| N5 | RAG over policy document | Missing | Entire policy is placed in prompt. |
-| N6 | Tests across layers | Missing/Partial | Only frontend smoke test is visible. |
+| N2 | CD build/publish artifacts | Missing | CI exists, but no publish stage. |
+| N3 | Outbox and bulkhead/throttling | Partial | Gateway rate limiting exists. No outbox or clear bulkhead around LLM/payment calls. |
+| N4 | OpenTelemetry metrics and trace | Missing | Correlation ids exist, but no OTel tracing/metrics setup. |
+| N5 | RAG over policy document | Missing | Full policy is still loaded into prompt. |
+| N6 | Tests across layers | Partial | Flutter smoke test, CI script, and harnesses exist. Dedicated unit/integration tests are still thin. |
 
 ## Bonus Status
 
 | ID | Requirement | Current status | Notes |
 | --- | --- | --- | --- |
-| B1 | Automated eval harness with metrics report | Missing/Partial | Fixture harness exists, but not a scoring eval harness with committed report. |
+| B1 | Automated eval harness with metrics report | Partial | `run-harness.ps1` runs all fixtures and prints a scorecard. It does not generate a committed metrics report artifact yet. |
 | B2 | MCP server for agent tools | Missing | Not started. |
 | B3 | Kubernetes manifests | Missing | Not started. |
 
-## Main Risks
+## Main Remaining Risks
 
-1. The missing API gateway and rate limiting are must-have blockers.
-2. The harness currently does not prove correctness; it only submits data.
-3. The escalation queue is not implemented, so approver story F4 is not met.
-4. Payment saga is too shallow for M9 because there is no reservation/release model or concurrency-safe budget protection.
-5. Correlation-id logging and audit trail are missing, which affects F9, M14, and observability claims.
-6. Deterministic routing is incomplete; several hard stops still rely on the LLM.
-7. CI, tests, README, architecture docs, ADRs, `.env.example`, and LICENSE are missing or incomplete.
-8. Dapr secrets and synchronous service invocation are not yet demonstrated.
-9. `.gitignore` does not ignore `.venv`, build, and generated outputs, increasing repo hygiene risk.
+1. Dapr secrets are not implemented, so M5/M13 are still only partially satisfied.
+2. Root README, LICENSE, `.env.example`, ADRs, and product dilemma documentation are missing.
+3. Verification scripts exist but have not been run in this audit; they may fail due to stack timing, stale Redis state, PowerShell compatibility, or status expectations.
+4. Payment success is not consumed by workflow, so successful payments may remain `BUDGET_RESERVED` instead of a final `PAID` state.
+5. Payment-service lacks structured correlation logs and `/healthz`.
+6. Pub/sub redelivery idempotency is incomplete.
+7. Architecture documentation needs alignment with the actual gateway behavior and .NET target version.
+8. Deterministic routing should be made complete for all policy hard stops and all fixture labels.
+9. No authentication/authorization, OTel, RAG, outbox, CD, MCP, or Kubernetes work is present yet.
 
-## Definition of Done for Main Submission
+## Updated Definition of Done for Main Submission
 
 The project is ready for `main` submission when:
 
-- `docker compose up` starts the gateway, all services, Dapr sidecars, Redis, and the UI or documented UI target.
-- All external API/UI access goes through the gateway.
-- The single verification command passes the four required journeys:
-  - `INV-1001`: auto-approve with no human.
-  - `INV-1003`: escalate, pause, human action, resume.
-  - `INV-1007`: duplicate of `INV-1001`, no second payment.
-  - `INV-1012`: human approval followed by payment failure and compensation.
-- Anti-cheese guards pass:
-  - At least two fixtures auto-approve without human action.
-  - Over-ceiling invoices never auto-approve, even with adversarial notes.
-  - Duplicate submissions, redelivered events, and retried payments have exactly one effect.
-- CI runs backend/frontend tests and quality checks.
-- Root README, architecture diagrams, ADRs, API docs, `.env.example`, LICENSE, and demo link are ready.
+- `docker compose up --build` starts the gateway, services, Dapr sidecars, Redis, and placement cleanly.
+- All external app traffic goes through `http://localhost:8080`.
+- `run-core-journeys.ps1` passes from a fresh state.
+- `run-harness.ps1` passes or clearly documents any non-blocking fixture deviations.
+- CI passes on GitHub using mock/stub LLM mode.
+- Dapr async pub/sub, sync service invocation, state, and secrets are all demonstrated.
+- Audit output and logs include correlation ids across gateway, workflow, AI, and payment.
+- Payment success and payment failure both end in explicit workflow states.
+- Root README, architecture doc, ADRs, API docs, `.env.example`, LICENSE, and demo link are ready.

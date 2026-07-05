@@ -13,6 +13,8 @@ from typing import List, Literal
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 
+from retriever import policy_retriever
+
 app = FastAPI(title="ApprovalFlow AI Service")
 
 
@@ -40,10 +42,22 @@ async def ai_service_health():
     }
 
 
-AUTONOMY_CEILING = float(os.getenv("AUTONOMY_CEILING", 250.0))
+# Helper to fetch config safely from Dapr Secret Store (with env fallback)
+def get_dapr_secret(key: str, default: str = None) -> str:
+    try:
+        with DaprClient() as dapr:
+            resp = dapr.get_secret(store_name="secretstore", key=key)
+            if resp and resp.secret and key in resp.secret:
+                return resp.secret[key]
+    except Exception:
+        pass  # Fall back to environment variable if Dapr secret is unreachable during init
+    return os.getenv(key, default)
+
+
+AUTONOMY_CEILING = float(get_dapr_secret("AUTONOMY_CEILING", "250.0"))
 # Swappable LLM Provider configuration (gemini vs mock) - Requirement M15
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
-api_key = os.getenv("GEMINI_API_KEY")
+api_key = get_dapr_secret("GEMINI_API_KEY")
 STATE_STORE_NAME = "statestore"
 
 FX_RATES = {
@@ -72,17 +86,20 @@ if LLM_PROVIDER == "gemini" and api_key:
         temperature=0.0
     ).with_structured_output(AgentDecision)
 
-POLICY_TEXT = ""
-try:
-    with open("policy.md", "r") as f:
-        POLICY_TEXT = f.read()
-except FileNotFoundError:
-    log_structured(None, "WARNING: policy.md not found in ai-service directory!", "WARN")
-
 
 @app.get("/dapr/subscribe")
 def subscribe():
     return [{"pubsubname": "pubsub", "topic": "invoice_submitted", "route": "/evaluate"}]
+
+
+# -------------------------------------------------------------------------
+# HELPER: Normalize Payload Keys (camelCase vs PascalCase vs snake_case)
+# -------------------------------------------------------------------------
+def get_field(payload: dict, *keys, default=None):
+    for key in keys:
+        if key in payload and payload[key] is not None:
+            return payload[key]
+    return default
 
 
 # -------------------------------------------------------------------------
@@ -94,32 +111,33 @@ def run_pre_llm_guard(payload: dict, dup_intercepted: bool) -> tuple[str | None,
     if dup_intercepted:
         return "duplicate", ["GLOBAL-DUP"], "Duplicate invoice detected: matching combination already processed."
 
-    total = float(payload.get("total") or 0.0)
-    currency = payload.get("currency", "USD").upper()
+    total = float(get_field(payload, "total", "Total") or 0.0)
+    currency = get_field(payload, "currency", "Currency", default="USD").upper()
     fx_rate = FX_RATES.get(currency, 1.0)
     total_usd = round(total * fx_rate, 2)
 
-    line_items = payload.get("lineItems") or payload.get("line_items") or []
-    tax_amount = float(payload.get("taxAmount") or payload.get("tax_amount") or 0.0)
-    receipt_present = payload.get("receiptPresent", True) if payload.get("receiptPresent") is not None else payload.get(
-        "receipt_present", True)
-    vendor_known = payload.get("vendorKnown", True) if payload.get("vendorKnown") is not None else payload.get(
-        "vendor_known", True)
+    line_items = get_field(payload, "lineItems", "LineItems", "line_items", default=[])
+    tax_amount = float(get_field(payload, "taxAmount", "TaxAmount", "tax_amount", default=0.0))
+    receipt_present = get_field(payload, "receiptPresent", "ReceiptPresent", "receipt_present", default=True)
+    vendor_known = get_field(payload, "vendorKnown", "VendorKnown", "vendor_known", default=True)
+    attendees = int(get_field(payload, "attendees", "Attendees", default=1))
+    notes = str(get_field(payload, "notes", "Notes", "description", "Description", default="")).lower()
 
+    # Math Reconcile Check
     if line_items:
         calc_subtotal = sum(
-            float(item.get("quantity", 1)) * float(item.get("unitPrice", 0.0) or item.get("unit_price", 0.0)) for item
-            in line_items)
+            float(get_field(item, "quantity", "Quantity", default=1)) *
+            float(get_field(item, "unitPrice", "UnitPrice", "unit_price", default=0.0))
+            for item in line_items
+        )
         if round(calc_subtotal + tax_amount, 2) != round(total, 2):
-            return "human_review", [
-                "GLOBAL-MATH"], f"Line items subtotal ({calc_subtotal}) + tax ({tax_amount}) != total ({total}). Math does not reconcile."
+            return "human_review", ["GLOBAL-MATH"], f"Line items subtotal ({calc_subtotal}) + tax ({tax_amount}) != total ({total}). Math does not reconcile."
 
+    # Global Hard Constraints
     if total_usd > 25.0 and not receipt_present:
         violations.append("GLOBAL-RECEIPT")
-
     if not vendor_known:
         violations.append("GLOBAL-VENDOR")
-
     if currency != "USD" and (total_usd > 1000.0 or total_usd > AUTONOMY_CEILING):
         violations.append("GLOBAL-FX")
 
@@ -127,12 +145,37 @@ def run_pre_llm_guard(payload: dict, dup_intercepted: bool) -> tuple[str | None,
     if (is_round_number and not vendor_known) or (not line_items and not vendor_known):
         violations.append("GLOBAL-FRAUD")
 
-    category = str(payload.get("category", "")).lower()
-    if category == "travel" and total_usd > 1500.0:
-        violations.append("TRAVEL-02")
+    category = str(get_field(payload, "category", "Category", default="")).lower()
+
+    # --- CATEGORY SPECIFIC HARDSTOPS ---
+    # Alcohol-only rejection (INV-1015)
+    if "alcohol" in notes or "beer" in notes or "wine" in notes or "liquor" in notes or "whiskey" in notes:
+        return "reject", ["MEAL-ALCOHOL"], "Explicit rejection: Alcohol-only expenses or non-compliant drinks are strictly non-reimbursable."
+
+    # Meals checks
+    if category == "meals":
+        per_attendee = total_usd / max(attendees, 1)
+        if per_attendee > 75.0 or total_usd > 200.0:
+            violations.append("MEAL-01")
+        if total_usd > 500.0:
+            violations.append("MEAL-02")
+
+    # SaaS checks
+    if category == "saas" and total_usd > 200.0:
+        violations.append("SAAS-01")
+
+    # Travel checks
+    if category == "travel":
+        if total_usd > 1500.0:
+            violations.append("TRAVEL-02")
+        if "first class" in notes or "business class" in notes:
+            violations.append("TRAVEL-03")
+
+    # Hardware checks
     if category == "hardware" and total_usd > 1000.0:
         violations.append("HW-02")
 
+    # Autonomy Ceiling Check
     if total_usd > AUTONOMY_CEILING:
         violations.append("AUTONOMY-CEILING")
 
@@ -145,8 +188,7 @@ def run_pre_llm_guard(payload: dict, dup_intercepted: bool) -> tuple[str | None,
 # -------------------------------------------------------------------------
 # LAYER 3: Post-LLM Guard (The Absolute Safety Net)
 # -------------------------------------------------------------------------
-def run_post_llm_guard(llm_route: str, llm_confidence: float, llm_violations: list[str], total_usd: float) -> tuple[
-    str, list[str], str]:
+def run_post_llm_guard(llm_route: str, llm_confidence: float, llm_violations: list[str], total_usd: float) -> tuple[str, list[str], str]:
     final_route = llm_route
     final_violations = list(set(llm_violations))
     reason_prefix = "AI evaluation applied successfully."
@@ -172,16 +214,14 @@ async def evaluate_invoice(request: Request):
     event = json.loads(body)
     data = event.get("data", {})
 
-    tracking_id = data.get("id") or data.get("Id") or "UNKNOWN"
-    # Extract end-to-end Correlation ID forwarded by C# Dapr pub/sub
-    correlation_id = data.get("CorrelationId") or data.get("correlationId") or request.headers.get("X-Correlation-ID")
+    tracking_id = get_field(data, "id", "Id", default="UNKNOWN")
+    correlation_id = get_field(data, "CorrelationId", "correlationId") or request.headers.get("X-Correlation-ID")
+    payload = get_field(data, "payload", "Payload", default={})
 
-    payload = data.get("payload") or data.get("Payload", {})
-
-    total = float(payload.get("total") or payload.get("Total") or 0.0)
-    currency = payload.get("currency", "USD").upper()
-    vendor = payload.get("vendor", "Unknown")
-    invoice_num = payload.get("invoiceNumber") or payload.get("invoice_number") or tracking_id
+    total = float(get_field(payload, "total", "Total", default=0.0))
+    currency = get_field(payload, "currency", "Currency", default="USD").upper()
+    vendor = get_field(payload, "vendor", "Vendor", default="Unknown")
+    invoice_num = get_field(payload, "invoiceNumber", "InvoiceNumber", "invoice_number", default=tracking_id)
 
     fx_rate = FX_RATES.get(currency, 1.0)
     total_usd = round(total * fx_rate, 2)
@@ -206,16 +246,27 @@ async def evaluate_invoice(request: Request):
         # Execute Layer 2: LLM Advisory Layer (Only if Layer 1 passes cleanly)
         if not route:
             if LLM_PROVIDER == "mock" or llm is None:
-                log_structured(correlation_id,
-                               "Executing swappable deterministic fallback evaluation (LLM_PROVIDER=mock or API key unset).")
-                route = "auto_approve" if total_usd <= 150.0 else "human_review"
+                log_structured(correlation_id, "Executing swappable deterministic fallback evaluation (LLM_PROVIDER=mock or API key unset).")
+                # Aligned threshold: Auto approve up to actual AUTONOMY_CEILING ($250)
+                route = "auto_approve" if total_usd <= AUTONOMY_CEILING else "human_review"
                 violations = []
-                reason = f"Deterministic Fallback Evaluation: Expense of ${total_usd} categorized as {route}."
+                reason = f"Deterministic Fallback Evaluation: Compliant expense of ${total_usd} categorized as {route}."
             else:
                 log_structured(correlation_id, "Passing to Gemini for policy nuance evaluation...")
+                # --- N5: RAG POLICY RETRIEVAL ---
+                invoice_category = get_field(payload, "category", "Category", default="other")
+                invoice_desc = get_field(payload, "notes", "Notes", "description", "Description", default="")
+
+                retrieved_policy_context = policy_retriever.retrieve(
+                    category=invoice_category,
+                    query_text=str(invoice_desc)
+                )
+                log_structured(correlation_id, f"[RAG Engine] Retrieved relevant clauses for category '{invoice_category}' ({len(retrieved_policy_context)} chars).")
+                # --------------------------------
+
                 prompt = ChatPromptTemplate.from_messages([
                     ("system",
-                     """You are an expert corporate expense auditor enforcing this policy:\n{policy}\n\nEvaluate the invoice payload carefully and classify it into exactly one of these routes:\n- 'auto_approve': Fully compliant, under ceiling, known vendor, receipt attached, valid math.\n- 'human_review': Missing receipts/info, new vendors, ambiguous categories, over caps, or requires manager sign-off.\n- 'reject': Explicitly non-reimbursable items.\n\nNote: All policy dollar thresholds apply to the USD Converted Total. Output strict JSON adhering to the schema."""),
+                     """You are an expert corporate expense auditor enforcing these retrieved policy clauses:\n{policy}\n\nEvaluate the invoice payload carefully and classify it into exactly one of these routes:\n- 'auto_approve': Fully compliant, under ceiling, known vendor, receipt attached, valid math.\n- 'human_review': Missing receipts/info, new vendors, ambiguous categories, over caps, or requires manager sign-off.\n- 'reject': Explicitly non-reimbursable items.\n\nNote: All policy dollar thresholds apply to the USD Converted Total. Output strict JSON adhering to the schema."""),
                     ("user",
                      "Category: {category}\nVendor: {vendor} (Known: {vendor_known})\nOriginal Amount: {total} {currency}\nUSD Converted Total: ${total_usd}\nReceipt Present: {receipt_present}\nLine Items: {line_items}\nDescription/Notes: {description}")
                 ])
@@ -223,18 +274,16 @@ async def evaluate_invoice(request: Request):
                 chain = prompt | llm
                 try:
                     ai_decision: AgentDecision = chain.invoke({
-                        "policy": POLICY_TEXT,
-                        "category": payload.get("category", "other"),
+                        "policy": retrieved_policy_context,  # <-- PASSING RETRIEVED CHUNKS ONLY
+                        "category": invoice_category,
                         "vendor": vendor,
-                        "vendor_known": payload.get("vendorKnown", True) if payload.get(
-                            "vendorKnown") is not None else payload.get("vendor_known", True),
+                        "vendor_known": get_field(payload, "vendorKnown", "VendorKnown", "vendor_known", default=True),
                         "total": total,
                         "currency": currency,
                         "total_usd": total_usd,
-                        "receipt_present": payload.get("receiptPresent", True) if payload.get(
-                            "receiptPresent") is not None else payload.get("receipt_present", True),
-                        "line_items": str(payload.get("lineItems") or []),
-                        "description": payload.get("notes") or payload.get("description") or "No description."
+                        "receipt_present": get_field(payload, "receiptPresent", "ReceiptPresent", "receipt_present", default=True),
+                        "line_items": str(get_field(payload, "lineItems", "LineItems", "line_items", default=[])),
+                        "description": invoice_desc
                     })
 
                     # Execute Layer 3: Post-LLM Guard
@@ -249,15 +298,12 @@ async def evaluate_invoice(request: Request):
                     log_structured(correlation_id, f"Pipeline complete: {route} | Violations: {violations}")
 
                 except Exception as e:
-                    # Clean failure fallback matching Requirement M15
                     route = "human_review"
                     violations = ["AI-PROVIDER-ERROR"]
                     reason = f"AI gateway bypassed due to unexpected provider error: {str(e)}"
                     log_structured(correlation_id, reason, "WARN")
 
-        # ---------------------------------------------------------
         # State Management & Event Dissemination
-        # ---------------------------------------------------------
         if route != "duplicate":
             try:
                 dapr.save_state(store_name=STATE_STORE_NAME, key=dup_key, value="PROCESSED")

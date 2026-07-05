@@ -71,7 +71,7 @@ services:
     environment:
       - AUTONOMY_CEILING=250.0
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - LLM_PROVIDER=gemini
+      - LLM_PROVIDER=mock
     volumes:
       - ./ai-service/policy.md:/app/policy.md:ro
     depends_on:
