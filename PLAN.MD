@@ -1,175 +1,132 @@
-# ApprovalFlow Completion Plan
+# ApprovalFlow Completion Plan - Part 2
 
-Last updated: 2026-07-04
+Last updated: 2026-07-06
 
-## Priority 0 - Must-Have Finish Line
+## Priority 0 - Prove The Must-Haves
 
-The project has moved from "skeleton" to "working candidate." The remaining work is mostly proof, polish, and closing must-have gaps.
+1. Run a clean local verification.
+   - Start Docker Desktop.
+   - Run `docker compose down` if the stack is already running.
+   - Run `docker compose up --build -d`.
+   - Run `.\reset-state.ps1`.
+   - Run `.\run-core-journeys.ps1`.
+   - Run `.\run-harness.ps1`.
+   - Save the pass/fail output for README/demo notes.
 
-1. Verify the stack from a clean state.
-   - Start with a fresh Redis/container state.
-   - Run `docker compose up --build`.
-   - Confirm gateway health at `http://localhost:8080/healthz`.
-   - Run `run-core-journeys.ps1`.
-   - Run `run-harness.ps1`.
-   - Capture failures and fix them before adding optional features.
+2. Fix any harness failures before adding new features.
+   - Check timing issues around Dapr startup and payment finalization.
+   - Verify expected statuses now that successful payments can become `PAID`.
+   - Confirm `INV-1001`, `INV-1003`, `INV-1007`, and `INV-1012` all pass.
+   - Confirm at least two auto-approvals and the adversarial `INV-1013` guard.
 
-2. Fix payment finalization.
-   - Add `payment_succeeded` subscription in `workflow-service`.
-   - Update invoice status to `PAID` or `PAYMENT_SUCCEEDED`.
-   - Set `PaymentOutcome` to a final success message.
-   - Keep `PAYMENT_FAILED` compensation behavior for `INV-1012`.
-   - Update harness expectations if final status changes from `BUDGET_RESERVED` to `PAID`.
+3. Clean up README truthfulness.
+   - Remove the outer ```markdown fence from `README.md`.
+   - Correct any claim that Dapr resiliency equals an outbox pattern.
+   - Clarify that RAG is keyword/section retrieval over `policy.md`.
+   - Clarify that CD publishes images through GHCR only after CI succeeds.
+   - Add the exact local secret setup for `dapr-components/secrets.json`.
+   - Add the gateway OpenAPI URL: `http://localhost:8080/docs`.
 
-3. Finish payment-service cross-cutting requirements.
-   - Add `/healthz`.
-   - Add structured JSON logging.
-   - Propagate and log correlation id from invoice state/event payload.
-   - Include correlation id in `payment_failed` and `payment_succeeded` events.
-   - Remove stray citation-like text from logs.
+4. Correct `ARCHITECTURE.md`.
+   - Show gateway forwarding to workflow through Dapr service invocation.
+   - Show workflow publishing `invoice_submitted`.
+   - Add `payment_succeeded` returning to workflow and ending in `PAID`.
+   - Correct .NET version from 8 to 10 if you keep net10.0.
+   - Add Jaeger/OTel and Dapr secret store/resiliency components.
 
-4. Complete Dapr secrets/config story.
-   - Add a Dapr secret-store component for local development.
-   - Move or document `GEMINI_API_KEY` loading through Dapr secrets.
-   - Add an externally configurable threshold source or document env/mounted policy update procedure clearly.
-   - Ensure `AUTONOMY_CEILING` in docs, compose, tests, and policy all match.
-
-5. Harden deterministic routing.
-   - Normalize payload keys once in AI service so camelCase and PascalCase both work.
-   - Add deterministic checks for:
-     - `MEAL-01` attendee requirement and per-attendee cap.
-     - `MEAL-02` client entertainment over USD 500.
-     - `MEAL-03` alcohol-only rejection.
-     - `SAAS-01` subscriptions over USD 200/month.
-     - `TRAVEL-03` first/business-class travel.
-   - Keep post-LLM ceiling override as defense in depth.
-   - Make mock provider decisions align with expected auto-approve fixtures.
-
-6. Strengthen idempotency.
-   - Add processed-event keys for `invoice_submitted`, `invoice_evaluated`, `invoice_approved`, `payment_failed`, and `payment_succeeded`.
-   - Make repeated `POST /api/invoices` for the same business invoice return or preserve existing state.
-   - Use business payment key in payment ledger, not only tracking id.
-   - Add harness checks for duplicate submit and payment retry behavior.
-
-7. Prove durable HITL pause/resume.
-   - Add a verification step that submits an escalated invoice, restarts workflow service, then approves it.
-   - Confirm the item remains in the escalation queue after restart.
-   - Document this in README.
-
-8. Correct and complete documentation.
-   - Add root `README.md` with technologies, run steps, test steps, API gateway URL, system diagram, and demo flow.
-   - Update `ARCHITECTURE.md` so gateway is shown as forwarding to workflow via Dapr service invocation, not directly publishing/saving state.
-   - Correct runtime/version notes such as .NET target version.
-   - Add API section listing gateway endpoints and links to OpenAPI docs.
-   - Add `docs/PRODUCT-DILEMMA.md` explaining the USD 250 autonomy posture.
-   - Add human-written ADRs under `docs/adr/`:
-     - Autonomy ceiling and router-decides pattern.
+5. Add required decision docs.
+   - Create `docs/PRODUCT-DILEMMA.md` explaining the USD 250 autonomy ceiling and why it is not a "$0 ceiling" dodge.
+   - Create ADRs under `docs/adr/`:
+     - Router-decides safety posture.
      - Dapr pub/sub/state/service invocation/secrets.
      - Payment saga and compensation.
-     - LLM provider abstraction and mock CI mode.
+     - Mock/Gemini provider switch.
+     - RAG policy retrieval.
 
-9. Finish repo hygiene.
-   - Add `.env.example`.
-   - Add `LICENSE`.
-   - Add `.venv/` and local temp/output folders to `.gitignore`.
-   - Check that no secrets are committed.
-   - Keep all final evaluated work on `main` before the 2026-07-12 EOD deadline.
+6. Finish Dapr secrets local setup.
+   - Add a non-secret template such as `dapr-components/secrets.example.json`.
+   - Document copying it to `dapr-components/secrets.json`.
+   - Ensure `.gitignore` excludes `dapr-components/secrets.json`.
+   - Confirm AI service reads `AUTONOMY_CEILING` and `GEMINI_API_KEY` from Dapr secret store when present.
 
-10. Tighten CI.
-   - Make CI set `LLM_PROVIDER=mock` in a way compose actually passes to `ai-service`.
-   - Ensure `run-ci-tests.ps1` is compatible with the GitHub runner PowerShell version.
-   - Add log dump and compose shutdown cleanup.
-   - Add at least one over-ceiling/prompt-injection assertion to CI.
-   - Consider running `run-core-journeys.ps1` in CI after the lighter smoke checks.
+7. Strengthen idempotency proof.
+   - Add processed-event keys per topic:
+     - `invoice_submitted`
+     - `invoice_evaluated`
+     - `invoice_approved`
+     - `payment_succeeded`
+     - `payment_failed`
+   - Add harness retry tests for payment and event replay.
+   - Use business payment keys where possible, not only tracking id.
 
-11. Add or improve automated tests.
-   - Unit-test AI deterministic guards.
-   - Unit-test workflow status transitions and budget reservation/release logic.
-   - Add an integration test for gateway-to-workflow Dapr invocation.
-   - Keep Flutter smoke test passing after UI text changes.
+8. Harden budget concurrency.
+   - Use Dapr state ETags or a transaction-style compare/update for budget reservation.
+   - Make the `INV-1014A/B` race deterministic.
+   - Document the reservation and release behavior in architecture docs.
 
-12. Record demo.
-   - Show gateway health and UI.
-   - Submit `INV-1001` or equivalent auto-approve.
-   - Submit `INV-1003`, show escalation queue, approve, and resume.
-   - Submit `INV-1007`, show duplicate is discarded.
-   - Submit/approve `INV-1012`, show payment failure and compensation.
-   - Show audit endpoint and dashboard metrics.
-   - Upload 2-5 minute recording and use the URL in the submission form.
+9. Prove durable HITL pause/resume.
+   - Add a test step that submits `INV-1003`, confirms it is in the escalation queue, restarts `workflow-service`, then approves it.
+   - Confirm the workflow resumes and reaches `PAID` or another documented final state.
 
-## Priority 1 - Nice-To-Have
+10. Keep repo hygiene clean.
+   - Do not commit generated `workflow-service/obj` changes.
+   - Ensure `.gitignore` excludes `obj`, `bin`, `.venv`, `.dart_tool`, build outputs, `.env`, and `dapr-components/secrets.json`.
+   - Keep final evaluated work on `main` before the assignment deadline.
 
-Start this only after the Must-Have harness and CI are green.
+## Priority 1 - Nice-To-Have Polish
 
-1. Add AuthN/AuthZ.
-   - Add self-signed JWT support at the gateway.
+1. AuthN/AuthZ roles (N1).
+   - Add a self-signed JWT mode at the gateway.
    - Roles: submitter, approver, admin/controller, auditor.
-   - Restrict escalation actions, dashboard, and audit endpoints by role.
+   - Protect submit, escalation actions, dashboard, and audit endpoints.
 
-2. Improve dashboard depth.
-   - Add payment success/failure counts.
-   - Add average processing latency.
-   - Add open escalation count and oldest escalation age.
-   - Add frontend view beyond modal if time allows.
+2. Strengthen CD proof (N2).
+   - Verify GHCR image publishing succeeds.
+   - Add image names to README.
+   - Keep publishing disabled for pull requests.
 
-3. Add CD.
-   - Build Docker images after CI passes.
-   - Publish to GitHub Container Registry or another free registry.
-   - Keep CD separate from required CI if time is tight.
+3. Improve resiliency beyond current N3.
+   - Keep Dapr retry/timeout/circuit breaker config.
+   - Add an actual outbox if time allows.
+   - Add poison-message/dead-letter notes if outbox is skipped.
 
-4. Add reliability extras.
-   - Implement outbox records for state changes plus published events.
-   - Add retry-safe outbox drain.
-   - Add LLM/payment bulkheads and timeouts.
-   - Add dead-letter or poison-message handling notes.
+4. Prove OpenTelemetry (N4).
+   - Run a core journey.
+   - Open Jaeger at `http://localhost:16686`.
+   - Capture one trace that includes gateway, workflow, AI, and payment where possible.
+   - Add trace instructions or screenshot reference to README.
 
-5. Add OpenTelemetry.
-   - Instrument gateway, workflow, AI, and payment.
-   - Propagate trace context through Dapr messages.
-   - Add one documented end-to-end trace tied to correlation id.
+5. Improve RAG (N5).
+   - Add retrieval logging to audit trail if useful.
+   - Include retrieved clause IDs/titles in AI reason or audit output.
+   - Keep deterministic gates authoritative.
 
-6. Add RAG over policy.
-   - Split `policy.md` into retrievable rule sections.
-   - Retrieve category/global clauses per invoice.
-   - Keep deterministic router authoritative after retrieval.
-
-7. Expand tests across layers.
-   - Unit tests.
-   - Integration tests with Redis/Dapr.
-   - End-to-end tests against compose.
-   - Frontend widget tests for submit/HITL/metrics states.
+6. Broaden tests (N6).
+   - Add Python unit tests for AI guard functions.
+   - Add payment-service unit tests for idempotency/failure events.
+   - Add workflow tests for status transitions if feasible.
+   - Keep Flutter widget test passing.
 
 ## Priority 2 - Bonus
 
-1. Commit an eval report.
-   - Extend `run-harness.ps1` to emit JSON/Markdown metrics.
-   - Track route accuracy, false auto-approval count, duplicate/payment safety results, and adversarial results.
-   - Commit the latest report under `reports/`.
+1. B1 eval report.
+   - Extend `run-harness.ps1` to write `reports/eval-latest.json` and `reports/eval-latest.md`.
+   - Include route accuracy, false auto-approval count, duplicate safety, payment safety, and adversarial safety.
+   - Commit a sample report after a passing run.
 
-2. Build an MCP server for agent tools.
+2. B2 MCP server.
+   - Build only if Must-Haves are green.
    - Expose tools such as `fetch_policy`, `lookup_vendor`, `check_duplicate`, and `reserve_budget`.
-   - Keep hard safety decisions outside the model.
+   - Keep hard safety decisions outside model control.
 
-3. Add Kubernetes manifests.
-   - Local cluster manifests for Redis, Dapr components, services, gateway, and frontend.
-   - Document local deployment and teardown.
+3. B3 Kubernetes.
+   - Add manifests for Redis, Dapr components, services, gateway, frontend, and Jaeger.
+   - Add local cluster run instructions.
 
-## Recommended Next 5 Moves
+## Immediate Next Moves
 
-1. Run compose and `run-core-journeys.ps1` from a clean state.
-2. Fix any harness failures before editing optional features.
-3. Add payment success handling and payment-service health/structured logs.
-4. Add README, `.env.example`, LICENSE, product dilemma doc, and ADRs.
-5. Run CI or reproduce its exact commands locally with `LLM_PROVIDER=mock`.
-
-## Fastest Path to a Strong Main Branch
-
-If time is tight, focus on this slice:
-
-1. Green `run-core-journeys.ps1`.
-2. Green GitHub Actions CI.
-3. Root README plus corrected `ARCHITECTURE.md`.
-4. Dapr secrets component or clearly documented local secret path.
-5. Payment success/failure final workflow states.
-6. ADRs, product dilemma doc, `.env.example`, and LICENSE.
-7. Demo recording.
+1. Fix README outer fence and architecture mismatch.
+2. Add `docs/PRODUCT-DILEMMA.md` and ADRs.
+3. Add `dapr-components/secrets.example.json` plus `.gitignore` protection for real secrets.
+4. Run clean compose plus `run-core-journeys.ps1`.
+5. Resolve any failures and then run `run-harness.ps1`.
