@@ -1,0 +1,36 @@
+apiVersion: dapr.io/v1alpha1
+kind: Resiliency
+metadata:
+  name: approvalflow-resiliency
+spec:
+  policies:
+    # 1. TIMEOUTS: Prevent services from hanging forever
+    timeouts:
+      generalTimeout: 15s
+      
+    # 2. RETRIES: Automatically retry temporary network glitches
+    retries:
+      pubsubRetry:
+        policy: exponential
+        maxInterval: 10s
+        maxRetries: 3
+
+    # 3. BULKHEAD / CIRCUIT BREAKERS: Stop sending traffic if a service is crashing
+    circuitBreakers:
+      pubsubCB:
+        maxRequests: 1
+        timeout: 30s
+        trip: consecutiveFailures >= 5
+
+  # Apply these policies to our Redis Pub/Sub and State Store components
+  targets:
+    components:
+      pubsub:
+        outbound:
+          retry: pubsubRetry
+          circuitBreaker: pubsubCB
+          timeout: generalTimeout
+      statestore:
+        outbound:
+          retry: pubsubRetry
+          timeout: generalTimeout
