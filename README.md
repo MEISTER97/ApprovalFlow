@@ -73,7 +73,7 @@ Follow these exact steps to boot the complete microservice cluster on your local
 ### Step 1: Clone the Repository
 
 ```powershell
-git clone [https://github.com/MEISTER97/ApprovalFlow.git](https://github.com/MEISTER97/ApprovalFlow.git)
+git clone https://github.com/MEISTER97/ApprovalFlow.git
 cd ApprovalFlow
 
 ```
