@@ -11,6 +11,8 @@ secrets.json
 # Python Cache
 __pycache__/
 *.pyc
+.venv/
+venv/
 
 # Flutter / Dart Build
 **/.dart_tool/
