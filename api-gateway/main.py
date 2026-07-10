@@ -89,7 +89,7 @@ async def forward_to_service(service_name: str, method: str, path: str, request:
 # GATEWAY ROUTE EXPOSURES
 # -------------------------------------------------------------------------
 @app.post("/api/invoices")
-@limiter.limit("20/minute")
+@limiter.limit("60/minute")
 async def submit_invoice(request: Request):
     return await forward_to_service(WORKFLOW_SERVICE_NAME, "POST", "api/invoices", request)
 
@@ -121,6 +121,15 @@ async def gateway_health():
 @app.get("/api/dashboard/metrics")
 async def get_dashboard_metrics(request: Request):
     return await forward_to_service(WORKFLOW_SERVICE_NAME, "GET", "api/dashboard/metrics", request)
+
+@app.get("/api/policy")
+async def get_policy(request: Request):
+    return await forward_to_service(WORKFLOW_SERVICE_NAME, "GET", "api/policy", request)
+
+
+@app.post("/api/policy")
+async def update_policy(request: Request):
+    return await forward_to_service(WORKFLOW_SERVICE_NAME, "POST", "api/policy", request)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)

@@ -23,7 +23,9 @@ jobs:
           echo "Configuring CI environment for swappable mock execution..."
           echo "LLM_PROVIDER=mock" >> $GITHUB_ENV
           echo "AUTONOMY_CEILING=250.0" >> $GITHUB_ENV
+          echo "AUTONOMY_CONFIDENCE=0.80" >> $GITHUB_ENV
           echo "DAPR_HTTP_PORT=3500" >> $GITHUB_ENV
+          echo "GEMINI_API_KEY=dummy_ci_mock_key" >> $GITHUB_ENV
 
           # Create dummy secrets file so Dapr local secretstore mounts cleanly
           mkdir -p dapr-components
@@ -41,15 +43,15 @@ jobs:
 
       - name: Wait for Dapr Mesh & Container Initialization
         run: |
-          echo "Waiting 15 seconds for Dapr placement sidecars and Redis to initialize..."
-          sleep 15
+          echo "Waiting 30 seconds for Dapr placement sidecars and Redis to initialize..."
+          sleep 30
           docker compose ps
 
       - name: Execute Core Journeys Verification Suite (M17 / D5)
         shell: pwsh
         run: |
           # Run the core journeys regression harness
-          ./run-core-journeys.ps1
+          ./run-all-verifications.ps1
 
       - name: Dump Container Logs on Failure
         if: failure()
