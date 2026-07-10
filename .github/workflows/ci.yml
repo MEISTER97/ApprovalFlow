@@ -24,6 +24,7 @@ jobs:
           echo "LLM_PROVIDER=mock" >> $GITHUB_ENV
           echo "AUTONOMY_CEILING=250.0" >> $GITHUB_ENV
           echo "DAPR_HTTP_PORT=3500" >> $GITHUB_ENV
+          echo "GEMINI_API_KEY=dummy_ci_mock_key" >> $GITHUB_ENV
 
           # Create dummy secrets file so Dapr local secretstore mounts cleanly
           mkdir -p dapr-components
