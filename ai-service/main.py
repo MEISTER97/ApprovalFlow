@@ -6,6 +6,7 @@ from dapr.clients import DaprClient
 from datetime import datetime
 from typing import Optional
 import uvicorn
+import re
 from otel_tracing import setup_opentelemetry, set_span_correlation_id
 
 # AI Imports
@@ -56,6 +57,7 @@ def get_dapr_secret(key: str, default: str = None) -> str:
 
 
 AUTONOMY_CEILING = float(get_dapr_secret("AUTONOMY_CEILING", "250.0"))
+min_confidence = float(os.getenv("AUTONOMY_CONFIDENCE", "0.80"))
 # Swappable LLM Provider configuration (gemini vs mock) - Requirement M15
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
 api_key = get_dapr_secret("GEMINI_API_KEY")
@@ -82,7 +84,7 @@ class AgentDecision(BaseModel):
 llm = None
 if LLM_PROVIDER == "gemini" and api_key:
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model="gemini-2.5-flash-lite",
         google_api_key=api_key,
         temperature=0.0
     ).with_structured_output(AgentDecision)
@@ -104,9 +106,9 @@ def get_field(payload: dict, *keys, default=None):
 
 
 # -------------------------------------------------------------------------
-# LAYER 1: Pre-LLM Guard (Pure Deterministic Code Gateways)
+# LAYER 1: Pre-LLM Guard (Dynamic)
 # -------------------------------------------------------------------------
-def run_pre_llm_guard(payload: dict, dup_intercepted: bool) -> tuple[str | None, list[str], str]:
+def run_pre_llm_guard(payload: dict, dup_intercepted: bool, ceiling: float, saas_limit: float, meal_limit: float) -> tuple[str | None, list[str], str]:
     violations = []
 
     if dup_intercepted:
@@ -139,7 +141,7 @@ def run_pre_llm_guard(payload: dict, dup_intercepted: bool) -> tuple[str | None,
         violations.append("GLOBAL-RECEIPT")
     if not vendor_known:
         violations.append("GLOBAL-VENDOR")
-    if currency != "USD" and (total_usd > 1000.0 or total_usd > AUTONOMY_CEILING):
+    if currency != "USD" and (total_usd > 1000.0 or total_usd > ceiling):
         violations.append("GLOBAL-FX")
 
     is_round_number = (total % 100 == 0 or total % 1000 == 0)
@@ -148,36 +150,30 @@ def run_pre_llm_guard(payload: dict, dup_intercepted: bool) -> tuple[str | None,
 
     category = str(get_field(payload, "category", "Category", default="")).lower()
 
-    # --- CATEGORY SPECIFIC HARDSTOPS ---
-    # Alcohol-only rejection (INV-1015)
+    # --- CATEGORY SPECIFIC HARDSTOPS (Now Dynamic) ---
     if "alcohol" in notes or "beer" in notes or "wine" in notes or "liquor" in notes or "whiskey" in notes:
-        return "reject", ["MEAL-ALCOHOL"], "Explicit rejection: Alcohol-only expenses or non-compliant drinks are strictly non-reimbursable."
+        return "reject", ["MEAL-ALCOHOL"], "Explicit rejection: Alcohol-only expenses."
 
-    # Meals checks
     if category == "meals":
         per_attendee = total_usd / max(attendees, 1)
-        if per_attendee > 75.0 or total_usd > 200.0:
+        if per_attendee > meal_limit or total_usd > 200.0:
             violations.append("MEAL-01")
         if total_usd > 500.0:
             violations.append("MEAL-02")
 
-    # SaaS checks
-    if category == "saas" and total_usd > 200.0:
+    if category == "saas" and total_usd > saas_limit:
         violations.append("SAAS-01")
 
-    # Travel checks
     if category == "travel":
         if total_usd > 1500.0:
             violations.append("TRAVEL-02")
         if "first class" in notes or "business class" in notes:
             violations.append("TRAVEL-03")
 
-    # Hardware checks
     if category == "hardware" and total_usd > 1000.0:
         violations.append("HW-02")
 
-    # Autonomy Ceiling Check
-    if total_usd > AUTONOMY_CEILING:
+    if total_usd > ceiling:
         violations.append("AUTONOMY-CEILING")
 
     if violations:
@@ -185,29 +181,27 @@ def run_pre_llm_guard(payload: dict, dup_intercepted: bool) -> tuple[str | None,
 
     return None, [], ""
 
-
 # -------------------------------------------------------------------------
-# LAYER 3: Post-LLM Guard (The Absolute Safety Net)
+# LAYER 3: Post-LLM Guard (Now Dynamic)
 # -------------------------------------------------------------------------
-def run_post_llm_guard(llm_route: str, llm_confidence: float, llm_violations: list[str], total_usd: float) -> tuple[str, list[str], str]:
+def run_post_llm_guard(llm_route: str, llm_confidence: float, llm_violations: list[str], total_usd: float, ceiling: float) -> tuple[str, list[str], str]:
     final_route = llm_route
     final_violations = list(set(llm_violations))
     reason_prefix = "AI evaluation applied successfully."
 
-    if total_usd > AUTONOMY_CEILING and final_route == "auto_approve":
+    if total_usd > ceiling and final_route == "auto_approve":
         final_route = "human_review"
         if "AUTONOMY-CEILING" not in final_violations:
             final_violations.append("AUTONOMY-CEILING")
-        reason_prefix = f"Post-LLM Safety Override: Auto-approval blocked because USD total (${total_usd}) exceeds ceiling (${AUTONOMY_CEILING})."
+        reason_prefix = f"Post-LLM Safety Override: Auto-approval blocked because USD total (${total_usd}) exceeds ceiling (${ceiling})."
 
-    if final_route == "auto_approve" and llm_confidence < 0.80:
+    if final_route == "auto_approve" and llm_confidence < min_confidence:
         final_route = "human_review"
         if "AUTONOMY-CONFIDENCE" not in final_violations:
             final_violations.append("AUTONOMY-CONFIDENCE")
-        reason_prefix = f"Post-LLM Safety Override: Confidence score ({llm_confidence}) is below required 0.80 threshold."
+        reason_prefix = f"Post-LLM Safety Override: Confidence score ({llm_confidence}) is below required ({min_confidence}) threshold."
 
     return final_route, final_violations, reason_prefix
-
 
 @app.post("/evaluate")
 async def evaluate_invoice(request: Request):
@@ -236,6 +230,7 @@ async def evaluate_invoice(request: Request):
     dup_intercepted = False
     dup_key = f"inv:{vendor}:{invoice_num}:{total}"
 
+    # CRITICAL FIX 1: Re-opened the DaprClient connection so 'dapr' is defined
     with DaprClient() as dapr:
         try:
             state_item = dapr.get_state(store_name=STATE_STORE_NAME, key=dup_key)
@@ -245,63 +240,102 @@ async def evaluate_invoice(request: Request):
         except Exception as e:
             log_structured(correlation_id, f"Redis read error: {e}", "ERROR")
 
-        # Execute Layer 1: Pre-LLM Guard
-        route, violations, reason = run_pre_llm_guard(payload, dup_intercepted)
+        # ---------------------------------------------------------------------
+        # DYNAMIC POLICY EXTRACTION (Stateless Data Engineering)
+        # ---------------------------------------------------------------------
+        dyn_ceiling = AUTONOMY_CEILING  # Fallbacks from .env
+        dyn_saas = 200.0
+        dyn_meal = 75.0
+        dyn_policy_text = ""
 
-        # Execute Layer 2: LLM Advisory Layer (Only if Layer 1 passes cleanly)
+        try:
+            policy_state = dapr.get_state(store_name=STATE_STORE_NAME, key="config:policy")
+            if policy_state.data:
+                dyn_policy_text = policy_state.data.decode("utf-8")
+
+                # Use Regex to extract the numbers the Controller typed in the UI
+                c_match = re.search(r'MAX_AUTO_APPROVE:\s*([0-9.]+)', dyn_policy_text)
+                if c_match: dyn_ceiling = float(c_match.group(1))
+
+                s_match = re.search(r'SAAS_PER_MONTH:\s*([0-9.]+)', dyn_policy_text)
+                if s_match: dyn_saas = float(s_match.group(1))
+
+                m_match = re.search(r'MEALS_PER_HEAD:\s*([0-9.]+)', dyn_policy_text)
+                if m_match: dyn_meal = float(m_match.group(1))
+
+                log_structured(correlation_id, f"Loaded dynamic policy from Redis. Ceiling: ${dyn_ceiling}")
+        except Exception as e:
+            log_structured(correlation_id, f"Redis policy fetch failed, using defaults: {e}", "WARN")
+
+        # Execute Layer 1: Pre-LLM Guard using live variables
+        route, violations, reason = run_pre_llm_guard(payload, dup_intercepted, dyn_ceiling, dyn_saas, dyn_meal)
+
+        # Execute Layer 2: LLM Advisory Layer
         if not route:
             if LLM_PROVIDER == "mock" or llm is None:
-                log_structured(correlation_id, "Executing swappable deterministic fallback evaluation (LLM_PROVIDER=mock or API key unset).")
-                # Aligned threshold: Auto approve up to actual AUTONOMY_CEILING ($250)
-                route = "auto_approve" if total_usd <= AUTONOMY_CEILING else "human_review"
+                log_structured(correlation_id, "Executing swappable deterministic fallback evaluation.")
+                route = "auto_approve" if total_usd <= dyn_ceiling else "human_review"
                 violations = []
                 reason = f"Deterministic Fallback Evaluation: Compliant expense of ${total_usd} categorized as {route}."
             else:
                 log_structured(correlation_id, "Passing to Gemini for policy nuance evaluation...")
-                # --- N5: RAG POLICY RETRIEVAL ---
+
                 invoice_category = get_field(payload, "category", "Category", default="other")
                 invoice_desc = get_field(payload, "notes", "Notes", "description", "Description", default="")
+
+                # Fallback to the first line item's description if root notes are missing (Fixes INV-1016)
+                if not invoice_desc:
+                    lines = get_field(payload, "lineItems", "LineItems", "line_items", default=[])
+                    if lines and len(lines) > 0:
+                        invoice_desc = get_field(lines[0], "Description", "description",
+                                                 default="No description provided")
 
                 retrieved_policy_context = policy_retriever.retrieve(
                     category=invoice_category,
                     query_text=str(invoice_desc)
                 )
-                log_structured(correlation_id, f"[RAG Engine] Retrieved relevant clauses for category '{invoice_category}' ({len(retrieved_policy_context)} chars).")
-                # --------------------------------
 
+                # --- COMBINE RAG WITH CONTROLLER OVERRIDES ---
+                combined_policy = f"BASE RAG POLICY:\n{retrieved_policy_context}\n\nLIVE CONTROLLER OVERRIDES:\n{dyn_policy_text}"
+
+                # Update the prompt to note that math is already verified to prevent LLM hesitation
                 prompt = ChatPromptTemplate.from_messages([
                     ("system",
                      """You are an expert corporate expense auditor enforcing these retrieved policy clauses:\n{policy}\n\nEvaluate the invoice payload carefully and classify it into exactly one of these routes:\n- 'auto_approve': Fully compliant, under ceiling, known vendor, receipt attached, valid math.\n- 'human_review': Missing receipts/info, new vendors, ambiguous categories, over caps, or requires manager sign-off.\n- 'reject': Explicitly non-reimbursable items.\n\nNote: All policy dollar thresholds apply to the USD Converted Total. Output strict JSON adhering to the schema."""),
                     ("user",
-                     "Category: {category}\nVendor: {vendor} (Known: {vendor_known})\nOriginal Amount: {total} {currency}\nUSD Converted Total: ${total_usd}\nReceipt Present: {receipt_present}\nLine Items: {line_items}\nDescription/Notes: {description}")
+                     "Category: {category}\nVendor: {vendor} (Known: {vendor_known})\nOriginal Amount: {total} {currency}\nUSD Converted Total: ${total_usd}\nTax Amount: ${tax_amount} (Math Pre-Verified)\nReceipt Present: {receipt_present}\nLine Items: {line_items}\nDescription/Notes: {description}")
                 ])
 
                 chain = prompt | llm
                 try:
                     ai_decision: AgentDecision = chain.invoke({
-                        "policy": retrieved_policy_context,  # <-- PASSING RETRIEVED CHUNKS ONLY
+                        "policy": combined_policy,  # <-- PASS THE COMBINED DYNAMIC POLICY
                         "category": invoice_category,
                         "vendor": vendor,
                         "vendor_known": get_field(payload, "vendorKnown", "VendorKnown", "vendor_known", default=True),
                         "total": total,
                         "currency": currency,
                         "total_usd": total_usd,
-                        "receipt_present": get_field(payload, "receiptPresent", "ReceiptPresent", "receipt_present", default=True),
+                        "tax_amount": get_field(payload, "taxAmount", "TaxAmount", "tax_amount", default=0.0),
+                        "receipt_present": get_field(payload, "receiptPresent", "ReceiptPresent", "receipt_present",
+                                                     default=True),
                         "line_items": str(get_field(payload, "lineItems", "LineItems", "line_items", default=[])),
                         "description": invoice_desc
                     })
 
-                    # Execute Layer 3: Post-LLM Guard
+                    # Execute Layer 3: Post-LLM Guard using live ceiling
                     route, violations, guard_reason = run_post_llm_guard(
                         ai_decision.route,
                         ai_decision.confidence,
                         ai_decision.violations,
-                        total_usd
+                        total_usd,
+                        dyn_ceiling
                     )
 
                     reason = f"{guard_reason} | LLM Rationale: {ai_decision.reason} (Confidence: {ai_decision.confidence})"
                     log_structured(correlation_id, f"Pipeline complete: {route} | Violations: {violations}")
 
+                # CRITICAL FIX 2: Re-aligned the indentation to properly catch the try block
                 except Exception as e:
                     route = "human_review"
                     violations = ["AI-PROVIDER-ERROR"]
@@ -331,7 +365,6 @@ async def evaluate_invoice(request: Request):
         log_structured(correlation_id, f"Successfully published {route} matrix upstream.")
 
     return {"status": "SUCCESS"}
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

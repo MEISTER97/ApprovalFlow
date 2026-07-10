@@ -85,37 +85,103 @@ void LogStructured(string? correlationId, string message, string level = "INFO")
 async Task<bool> TryReserveBudgetAsync(DaprClient dapr, string department, double amount, string invoiceId, string? correlationId = null)
 {
     string budgetKey = $"budget:{department}";
-    var budgetState = await dapr.GetStateEntryAsync<double?>(StateStoreName, budgetKey);
-    
-    if (budgetState.Value == null)
+    int maxRetries = 3;
+
+    for (int i = 0; i < maxRetries; i++)
     {
-        budgetState.Value = DefaultBudgets.GetValueOrDefault(department, 10000.0);
+        var (budget, etag) = await dapr.GetStateAndETagAsync<double>(StateStoreName, budgetKey);
+        
+        if (string.IsNullOrEmpty(etag))
+            {
+                budget = DefaultBudgets.GetValueOrDefault(department, 10000.0);
+            }
+
+        LogStructured(correlationId, $"[Saga Reserve] Checking {budgetKey}: Balance = ${budget:F2} | Requested = ${amount:F2}");
+
+        if (budget < amount)
+        {
+            LogStructured(correlationId, $"[Saga Reserve] BLOCKED: Insufficient funds in {department}. Budget cannot fall below $0.", "WARN");
+            return false;
+        }
+
+        var newBudget = budget - amount;
+        
+        try 
+        {
+            // Force FirstWrite concurrency
+            var success = await dapr.TrySaveStateAsync(
+                StateStoreName, 
+                budgetKey, 
+                newBudget, 
+                etag, 
+                new StateOptions { Concurrency = ConcurrencyMode.FirstWrite }
+            );
+
+            if (success)
+            {
+                LogStructured(correlationId, $"[Saga Reserve] SUCCESS: Reserved ${amount:F2} for {invoiceId}. Remaining Balance = ${newBudget:F2}");
+                return true; 
+            }
+            else 
+            {
+                // Dapr returned false gracefully
+                LogStructured(correlationId, $"[Saga Reserve] Concurrency conflict for {invoiceId} (ETag mismatch). Retrying... ({i + 1}/{maxRetries})", "WARN");
+            }
+        }
+        catch (Exception)
+        {
+            // Dapr threw an exception instead of returning false! Catch it and retry anyway.
+            LogStructured(correlationId, $"[Saga Reserve] Concurrency conflict for {invoiceId} (Exception caught). Retrying... ({i + 1}/{maxRetries})", "WARN");
+        }
+        
+        // Pause for a random fraction of a second to prevent the threads from colliding again
+        await Task.Delay(Random.Shared.Next(10, 50));
     }
 
-    LogStructured(correlationId, $"[Saga Reserve] Checking {budgetKey}: Balance = ${budgetState.Value:F2} | Requested = ${amount:F2}");
-
-    if (budgetState.Value < amount)
-    {
-        LogStructured(correlationId, $"[Saga Reserve] BLOCKED: Insufficient funds in {department}. Budget cannot fall below $0.", "WARN");
-        return false;
-    }
-
-    budgetState.Value -= amount;
-    await budgetState.SaveAsync();
-    LogStructured(correlationId, $"[Saga Reserve] SUCCESS: Reserved ${amount:F2} for {invoiceId}. Remaining Balance = ${budgetState.Value:F2}");
-    return true;
+    LogStructured(correlationId, $"[Saga Reserve] FAILED: Could not reserve budget for {invoiceId} due to high system load.", "ERROR");
+    return false;
 }
 
 async Task ReleaseBudgetAsync(DaprClient dapr, string department, double amount, string invoiceId, string? correlationId = null)
 {
     string budgetKey = $"budget:{department}";
-    var budgetState = await dapr.GetStateEntryAsync<double?>(StateStoreName, budgetKey);
-    
-    double currentBalance = budgetState.Value ?? DefaultBudgets.GetValueOrDefault(department, 0.0);
-    currentBalance += amount;
-    
-    await dapr.SaveStateAsync(StateStoreName, budgetKey, currentBalance);
-    LogStructured(correlationId, $"[Saga Rollback] COMPENSATED: Released ${amount:F2} back to {budgetKey} for {invoiceId}. Restored Balance = ${currentBalance:F2}");
+    int maxRetries = 3;
+
+    for (int i = 0; i < maxRetries; i++)
+    {
+        // 1. Fetch the current balance AND the lock (ETag)
+        var (budget, etag) = await dapr.GetStateAndETagAsync<double>(StateStoreName, budgetKey);
+        
+        double currentBalance = budget;
+        currentBalance += amount;
+        
+        try 
+        {
+            // 2. Attempt to save using the ETag lock
+            var success = await dapr.TrySaveStateAsync(
+                StateStoreName, 
+                budgetKey, 
+                currentBalance, 
+                etag, 
+                new StateOptions { Concurrency = ConcurrencyMode.FirstWrite }
+            );
+
+            if (success)
+            {
+                LogStructured(correlationId, $"[Saga Rollback] COMPENSATED: Released ${amount:F2} back to {budgetKey} for {invoiceId}. Restored Balance = ${currentBalance:F2}");
+                return; 
+            }
+        }
+        catch (Exception)
+        {
+            // Catch Dapr state exceptions to trigger the retry loop
+        }
+        
+        LogStructured(correlationId, $"[Saga Rollback] Concurrency conflict releasing budget for {invoiceId}. Retrying... ({i + 1}/{maxRetries})", "WARN");
+        await Task.Delay(Random.Shared.Next(10, 50));
+    }
+
+    LogStructured(correlationId, $"[Saga Rollback] FAILED: Could not release budget for {invoiceId} due to high system load.", "ERROR");
 }
 
 const string EscalationIndexKey = "index:escalations";
@@ -327,14 +393,21 @@ app.MapPost("/api/escalations/{id}/action", async (string id, [FromBody] HumanAc
         return Results.BadRequest(new { error = $"Invoice is currently in [{state.Status}] status and cannot be actioned." });
     }
 
-    string actionUpper = request.Action.ToUpper();
+string actionUpper = request.Action.ToUpper();
     string targetStatus = actionUpper switch
     {
         "APPROVE" => "APPROVED",
         "REJECT"  => "REJECTED",
         "SEND_BACK" or "MORE_INFO" or "REQUEST_INFO" => "PENDING_MORE_INFO",
+        "RESUBMIT" => "PENDING_HUMAN_REVIEW", 
         _         => "REJECTED"
     };
+
+    // If the submitter resubmits, we must put it BACK into the manager queue
+    if (targetStatus == "PENDING_HUMAN_REVIEW")
+    {
+        await AddToEscalationQueueAsync(daprClient, id, correlationId);
+    }
 
     string paymentOutcome = targetStatus switch
     {
@@ -346,7 +419,7 @@ app.MapPost("/api/escalations/{id}/action", async (string id, [FromBody] HumanAc
     var updatedState = state with 
     { 
         Status = targetStatus,
-        Reason = $"HITL Manager Action ({actionUpper}): {request.Notes}",
+        Reason = $"{state.Reason}\n-> {actionUpper}: {request.Notes}",
         FinalActor = $"HITL Manager ({actionUpper})",
         PaymentOutcome = paymentOutcome
     };
@@ -506,6 +579,29 @@ app.MapPost("/api/workflow/payment-succeeded", async ([FromBody] PaymentSuccessN
 .WithTopic("pubsub", "payment_succeeded")
 .WithName("payment_succeeded");
 
+// --- ENDPOINT 10: Get Current Policy (Requirement F7) ---
+app.MapGet("/api/policy", async (DaprClient daprClient) =>
+{
+    var policy = await daprClient.GetStateAsync<string>(StateStoreName, "config:policy");
+    
+    // If it's the first time booting up and Redis is empty, provide a default template
+    if (string.IsNullOrEmpty(policy))
+    {
+        policy = "## Autonomy Thresholds\n\n- MAX_AUTO_APPROVE: 250.00\n- MEALS_PER_HEAD: 75.00\n- SAAS_PER_MONTH: 200.00\n\n*Note: Adjust these values to instantly update the AI guardrails.*";
+    }
+    
+    return Results.Ok(new { policy });
+});
+
+// --- ENDPOINT 11: Update Policy (Requirement F7) ---
+app.MapPost("/api/policy", async ([FromBody] PolicyUpdateRequest request, DaprClient daprClient) =>
+{
+    await daprClient.SaveStateAsync(StateStoreName, "config:policy", request.Policy);
+    LogStructured(null, "Controller updated the global AI expense policy thresholds.");
+    return Results.Ok(new { success = true });
+});
+
+
 app.Run();
 
 // Core Data Structures Aligned with Grading and Plan Schemas
@@ -532,6 +628,9 @@ public record EvaluationResult(string Id, string Route, List<string> Violations,
 public record HumanActionRequest(string Action, string Notes);
 public record PaymentFailureNotification(string Id, string Reason);
 public record PaymentSuccessNotification(string Id, string Status, double Amount, string? CorrelationId = null);
+
+public record PolicyUpdateRequest(string Policy);
+
 
 public record DashboardMetrics(
     int TotalSubmissions = 0,

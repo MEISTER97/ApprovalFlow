@@ -49,7 +49,7 @@ jobs:
         shell: pwsh
         run: |
           # Run the core journeys regression harness
-          ./run-core-journeys.ps1
+          ./run-all-verifications.ps1
 
       - name: Dump Container Logs on Failure
         if: failure()

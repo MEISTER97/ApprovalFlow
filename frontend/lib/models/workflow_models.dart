@@ -58,6 +58,8 @@ class WorkflowState {
   final String? correlationId;
   final String? finalActor;
   final String? paymentOutcome;
+  final double? confidence; // NEW: For F4 Approver View
+  final List<String> citedPolicyClauses; // NEW: For F4 Approver View
   final Map<String, dynamic>? payload;
 
   WorkflowState({
@@ -68,6 +70,8 @@ class WorkflowState {
     this.correlationId,
     this.finalActor,
     this.paymentOutcome,
+    this.confidence,
+    this.citedPolicyClauses = const [],
     this.payload,
   });
 
@@ -80,6 +84,8 @@ class WorkflowState {
       correlationId: json['correlationId'],
       finalActor: json['finalActor'],
       paymentOutcome: json['paymentOutcome'],
+      confidence: json['confidence'] != null ? (json['confidence'] as num).toDouble() : null,
+      citedPolicyClauses: List<String>.from(json['citedPolicyClauses'] ?? []),
       payload: json['payload'],
     );
   }
