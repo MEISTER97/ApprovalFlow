@@ -86,7 +86,7 @@ services:
       - AUTONOMY_CEILING=${AUTONOMY_CEILING}
       - AUTONOMY_CONFIDENCE=${AUTONOMY_CONFIDENCE}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - LLM_PROVIDER=gemini
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
     volumes:
       - ./ai-service/policy.md:/app/policy.md:ro

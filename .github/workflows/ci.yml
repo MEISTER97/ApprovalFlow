@@ -41,8 +41,8 @@ jobs:
 
       - name: Wait for Dapr Mesh & Container Initialization
         run: |
-          echo "Waiting 15 seconds for Dapr placement sidecars and Redis to initialize..."
-          sleep 15
+          echo "Waiting 30 seconds for Dapr placement sidecars and Redis to initialize..."
+          sleep 30
           docker compose ps
 
       - name: Execute Core Journeys Verification Suite (M17 / D5)
