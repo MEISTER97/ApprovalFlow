@@ -84,7 +84,7 @@ class AgentDecision(BaseModel):
 llm = None
 if LLM_PROVIDER == "gemini" and api_key:
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash-lite",
+        model="gemini-2.5-flash",
         google_api_key=api_key,
         temperature=0.0
     ).with_structured_output(AgentDecision)

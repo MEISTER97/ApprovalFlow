@@ -22,3 +22,7 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# Local temporary test scripts
+test-budget-limit.ps1
+test-race-condition.ps1
