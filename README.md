@@ -186,10 +186,10 @@ The frontend is fully containerized and boots automatically with the backend clu
 1. Ensure the cluster is running (`docker compose up -d --build`).
 2. Open your web browser and navigate to: **`http://localhost:3000`**
 
-### How to Run the UI
+### Alternative: Running Locally
 
-Ensure your backend Docker Compose cluster is already running and healthy. Then, open a new terminal window and run:
-
+If you are modifying the frontend code and want hot-reload for development, you can run it locally instead of through Docker. Note: This requires the Flutter SDK to be installed on your machine.
+Open a new terminal window and run:
 ```powershell
 # 1. Navigate to the frontend directory
 cd frontend
@@ -199,7 +199,4 @@ flutter pub get
 
 # 3. Boot the application (defaults to a Chrome web instance)
 flutter run -d chrome
-
 ```
-
-The Flutter web app will launch in your default browser, automatically connecting to `http://localhost:8080` (the API Gateway) to route your actions through the mesh.
