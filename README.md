@@ -6,7 +6,7 @@ An enterprise-grade, event-driven corporate expense approval platform built with
 
 ## 🎯 1. Purpose of the System
 
-> 📖 **Deep Dive:** For a comprehensive breakdown of the internal state machine, the Two-Phase Saga payment rollback, and the exact Dapr JSON event contracts, please see the [System Architecture & Component Boundaries (architecture.md)](./architecture.md) document.
+> 📖 **Deep Dive:** For a comprehensive breakdown of the internal state machine, the Two-Phase Saga payment rollback, and the exact Dapr JSON event contracts, please see the [System Architecture & Component Boundaries (architecture.md)](./ARCHITECTURE.md) document.
 
 In modern enterprise finance, traditional expense approval systems suffer from rigid, rule-only bottlenecks or unchecked manual reviews that waste hours of engineering and management time. Conversely, deploying raw Generative AI to approve financial transactions introduces catastrophic risks: hallucinations, prompt injections, duplicate invoice fraud, and unauthorized budget overruns.
 
