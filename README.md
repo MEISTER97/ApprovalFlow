@@ -136,7 +136,10 @@ Execute the full master test suite against your running Docker cluster:
 ```powershell
 .\run-all-verifications.ps1
 ```
-
+Or To run an exhaustive evaluation of all 20 sample invoices, including automated human-in-the-loop (HITL) overrides and status grading, run the full test harness:
+```powershell
+.\run-harness.ps1
+```
 
 ### What the Verification Harness Tests:
 
