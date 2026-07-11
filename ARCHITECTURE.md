@@ -46,7 +46,7 @@ graph TD
 
 1. **`api-gateway` (FastAPI / Python 3.11):** The single external ingress boundary. Enforces IP-based rate-limiting (`60 req/min` via SlowAPI), injects distributed `X-Correlation-ID` headers, handles CORS for Flutter web clients, and proxies business operations to `workflow-service` via Dapr Service Invocation.
 2. **`workflow-service` (ASP.NET Core / .NET 10):** The primary state machine orchestrator. Ingests raw invoices (`202 Accepted`), persists initial state, publishes `invoice_submitted` events, manages departmental budget reservations (`TryReserveBudgetAsync`), and maintains the Human-in-the-Loop (HITL) escalation queue index (`index:escalations`).
-3. **`ai-service` (FastAPI / Python 3.11 + LangChain):** The policy compliance evaluation engine. Executes a 3-layer zero-trust evaluation pipeline utilizing local keyword/section Retrieval-Augmented Generation (RAG) over `policy.md` and Google Gemini 2.5 Flash (with a swappable `mock` fallback provider).
+3. **`ai-service` (FastAPI / Python 3.11 + LangChain):** The policy compliance evaluation engine. Executes a 3-layer zero-trust evaluation pipeline utilizing local keyword/section Retrieval-Augmented Generation (RAG) over `policy.md` and Google Gemini 3.5 Flash (with a swappable `mock` fallback provider).
 4. **`payment-service` (FastAPI / Python 3.11):** Simulates external banking settlement gateways. Consumes approved invoices, enforces strict Redis ledger idempotency checks (`ledger:{id}`), and emits saga failure notifications (`payment_failed`) or success receipts (`payment_succeeded`).
 5. **`frontend` (Flutter / Dart):** Responsive UI providing invoice submission forms, real-time status polling, manager escalation dashboards (Approve / Reject / Request More Info), and live audit trail visualizers.
 
@@ -72,7 +72,7 @@ flowchart TD
     H --> I{"Check LLM_PROVIDER"}
     
     I -->|LLM_PROVIDER=mock| J["Deterministic Mock Fallback Evaluation"]
-    I -->|LLM_PROVIDER=gemini| K["LangChain + Gemini 2.5 Flash Structured AgentDecision"]
+    I -->|LLM_PROVIDER=gemini| K["LangChain + Gemini 3.5 Flash Structured AgentDecision"]
     
     J --> L["Layer 3: Post-LLM Safety Guard"]
     K --> L
