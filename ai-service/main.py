@@ -84,9 +84,10 @@ class AgentDecision(BaseModel):
 llm = None
 if LLM_PROVIDER == "gemini" and api_key:
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model="gemini-3.5-flash",
         google_api_key=api_key,
-        temperature=0.0
+        temperature=0.0,
+        max_retries=3
     ).with_structured_output(AgentDecision)
 
 
@@ -301,7 +302,17 @@ async def evaluate_invoice(request: Request):
                 # Update the prompt to note that math is already verified to prevent LLM hesitation
                 prompt = ChatPromptTemplate.from_messages([
                     ("system",
-                     """You are an expert corporate expense auditor enforcing these retrieved policy clauses:\n{policy}\n\nEvaluate the invoice payload carefully and classify it into exactly one of these routes:\n- 'auto_approve': Fully compliant, under ceiling, known vendor, receipt attached, valid math.\n- 'human_review': Missing receipts/info, new vendors, ambiguous categories, over caps, or requires manager sign-off.\n- 'reject': Explicitly non-reimbursable items.\n\nNote: All policy dollar thresholds apply to the USD Converted Total. Output strict JSON adhering to the schema."""),
+                     """You are an expert corporate expense auditor enforcing ONLY these retrieved policy clauses:
+                {policy}
+
+                Evaluate the invoice payload carefully and classify it into exactly one of these routes:
+                - 'auto_approve': The expense is fully compliant with the provided policy clauses and has valid math.
+                - 'human_review': The expense violates a policy clause, is missing required documentation according to the policy, or requires manager sign-off.
+                - 'reject': The expense contains explicitly non-reimbursable items according to the policy.
+
+                CRITICAL: Do not invent rules. If the policy does not explicitly require a receipt for this specific dollar amount or category, do not penalize the invoice. 
+
+                Output strict JSON adhering to the schema."""),
                     ("user",
                      "Category: {category}\nVendor: {vendor} (Known: {vendor_known})\nOriginal Amount: {total} {currency}\nUSD Converted Total: ${total_usd}\nTax Amount: ${tax_amount} (Math Pre-Verified)\nReceipt Present: {receipt_present}\nLine Items: {line_items}\nDescription/Notes: {description}")
                 ])
