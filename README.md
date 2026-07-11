@@ -180,6 +180,12 @@ ApprovalFlow includes a cross-platform Flutter graphical interface that acts as 
 * **Controller Dashboard (F7, F8):** An executive view showing system throughput, auto-approval vs. escalation rates, and the total dollar amount processed autonomously. It also allows controllers to dynamically update the Autonomy Ceiling (e.g., $250) and LLM Confidence thresholds on the fly without restarting any backend containers.
 * **Auditor Immutable Trail (F9, F10):** A search interface where auditors can input a Correlation ID. It parses the C# JSON payload and renders a beautiful timeline step-by-step, proving the AI's deterministic limits and showing exactly who made the final authority call (AI vs. Human) alongside the final Ledger Outcome.
 
+**How to Access the UI:**
+The frontend is fully containerized and boots automatically with the backend cluster. You do not need to install Flutter locally. 
+
+1. Ensure the cluster is running (`docker compose up -d --build`).
+2. Open your web browser and navigate to: **`http://localhost:3000`**
+
 ### How to Run the UI
 
 Ensure your backend Docker Compose cluster is already running and healthy. Then, open a new terminal window and run:

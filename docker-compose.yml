@@ -83,8 +83,8 @@ services:
       context: ./ai-service
     # REMOVED host ports mapping
     environment:
-      - AUTONOMY_CEILING=${AUTONOMY_CEILING}
-      - AUTONOMY_CONFIDENCE=${AUTONOMY_CONFIDENCE}
+      - AUTONOMY_CEILING=${AUTONOMY_CEILING:-250}
+      - AUTONOMY_CONFIDENCE=${AUTONOMY_CONFIDENCE:-0.85}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
@@ -138,6 +138,14 @@ services:
     depends_on:
       - payment-service
     network_mode: "service:payment-service"
+
+  frontend-ui:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:80"  
+    depends_on:
+      - api-gateway
 
 networks:
   approval-network:
