@@ -93,7 +93,7 @@ Copy-Item dapr-components/secrets.example.json dapr-components/secrets.json
 
 ```
 
-*(Note: By default, the system boots with `LLM_PROVIDER=mock`, allowing the stack to run lightning-fast completely locally without needing live Google Gemini API keys. To test real LLM reasoning, insert your `GEMINI_API_KEY` into `dapr-components/secrets.json` and `.env`, then set `LLM_PROVIDER=gemini`).*
+*(Note: By default, the system boots with `LLM_PROVIDER=gemini` to demonstrate the live AI evaluation pipeline. To run the system, you must insert your own `GEMINI_API_KEY` into both `dapr-components/secrets.json` and your `.env` file before booting. If you do not have an API key available, you can set `LLM_PROVIDER=mock` to bypass the AI and run the stack completely locally using deterministic fallback logic).*
 
 ### Step 3: Build and Boot the Microservice Cluster
 
