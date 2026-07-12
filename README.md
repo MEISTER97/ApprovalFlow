@@ -6,6 +6,8 @@ An enterprise-grade, event-driven corporate expense approval platform built with
 
 ## 🎯 1. Purpose of the System
 
+> 📖 **Deep Dive:** For a comprehensive breakdown of the internal state machine, the Two-Phase Saga payment rollback, and the exact Dapr JSON event contracts, please see the [System Architecture & Component Boundaries (architecture.md)](./ARCHITECTURE.md) document.
+
 In modern enterprise finance, traditional expense approval systems suffer from rigid, rule-only bottlenecks or unchecked manual reviews that waste hours of engineering and management time. Conversely, deploying raw Generative AI to approve financial transactions introduces catastrophic risks: hallucinations, prompt injections, duplicate invoice fraud, and unauthorized budget overruns.
 
 **ApprovalFlow solves the "AI-in-Finance" governance dilemma.** 
@@ -73,7 +75,7 @@ Follow these exact steps to boot the complete microservice cluster on your local
 ### Step 1: Clone the Repository
 
 ```powershell
-git clone [https://github.com/MEISTER97/ApprovalFlow.git](https://github.com/MEISTER97/ApprovalFlow.git)
+git clone https://github.com/MEISTER97/ApprovalFlow.git
 cd ApprovalFlow
 
 ```
@@ -136,7 +138,10 @@ Execute the full master test suite against your running Docker cluster:
 ```powershell
 .\run-all-verifications.ps1
 ```
-
+Or To run an exhaustive evaluation of all 20 sample invoices, including automated human-in-the-loop (HITL) overrides and status grading, run the full test harness:
+```powershell
+.\run-harness.ps1
+```
 
 ### What the Verification Harness Tests:
 

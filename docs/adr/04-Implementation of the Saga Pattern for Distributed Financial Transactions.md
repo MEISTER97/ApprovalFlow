@@ -7,12 +7,6 @@ On approval of an invoice, the budget is reserved in the state store, and the st
 In case of trigger, a compensating action is performed, which releases the budget of the department, which we called ReleaseBudgetAsync, and the state is set to PAYMENT_FAILED.
 We have created an /api/workflow/payment-succeeded endpoint, which triggers on successful completion of an event using an idempotency check.
 
-
 Consequences:
 Positive: Service is very loose with respect to the payment gateway, responding resiliently to asynchronous successes and failures.
 Negative: Increases complexity in the workflow and requires custom state management rather than a mere database transaction.
-
-
-
-
-

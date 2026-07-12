@@ -9,7 +9,7 @@ In order to avoid any mistakes in calculations, we used Optimistic Concurrency C
 In particular, the system is:
 - Fetching budget status along with its ETag version utilizing GetStateAndETagAsync.
 - Checking if the requested amount is valid.
-- Trying to save the budget by calling TrySaveStateAsync with the ConcurrencyMode.FirstWrite option.
+- Trying to save the budget by calling TrySaveStateAsync with the ConcurrencyMode.
 - In case the ETag has changed indicating some other container took over the budget during the period of time required for performing calculations, the write attempt is instantly rejected by Dapr.
 - The system catches this rejection and initiates the try catch retry loop with a random delay of 10-50ms in order to avoid blocking threads.
 
@@ -20,5 +20,5 @@ Robustness: Thanks to the retry loop, the software manages database write confli
 Data Integrity: Meets the expectations for financial ledger accuracy.
 
 Negative: 
-Waiting Time: In highly concurrent scenarios, response time for one invoice might be increased by no more than several dozen milliseconds due to random back-off time.
+Waiting Time: In highly concurrent scenarios, response time for one invoice might be increased by several dozen milliseconds due to random back-off time.
 Difficulty: The saga programming in С# is rather complicated as it requires more than just calling SaveAsync() methods, since it has to deal with state preferences and loops.
