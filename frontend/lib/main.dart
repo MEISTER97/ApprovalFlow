@@ -119,7 +119,6 @@ class SubmitterScreen extends StatefulWidget {
 class _SubmitterScreenState extends State<SubmitterScreen> {
   final ApiService _apiService = ApiService();
 
-  // Fully restored form parameters from your original code
   final TextEditingController _vendorController = TextEditingController(
       text: 'RackSpace Supplies');
   final TextEditingController _totalController = TextEditingController(
@@ -161,7 +160,6 @@ class _SubmitterScreenState extends State<SubmitterScreen> {
     });
   }
 
-  // Restored your core non-blocking submit workflow with F3 safety
   Future<void> _submitInvoice() async {
     final double? total = double.tryParse(_totalController.text.trim());
     if (total == null || _vendorController.text
@@ -809,8 +807,7 @@ class _ControllerScreenState extends State<ControllerScreen> {
     setState(() => _isLoading = true);
     final metrics = await _apiService.getDashboardMetrics();
 
-    // Note: If you haven't implemented the GET /api/policy endpoint in Program.cs yet,
-    // this will gracefully fall back to a default string.
+
     final policy = await _apiService.getPolicyMarkdown() ?? "## Autonomy Thresholds\n\n- MAX_AUTO_APPROVE: 250.00\n- MEALS_PER_HEAD: 75.00";
 
     setState(() {
